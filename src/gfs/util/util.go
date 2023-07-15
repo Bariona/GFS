@@ -8,6 +8,20 @@ import (
 	"gfs"
 )
 
+func Min(a, b int) int {
+	if (a < b) {
+		return a
+	}
+	return b
+}
+
+func Max(a, b int) int {
+	if (a < b) {
+		return b
+	}
+	return a
+}
+
 // Call is RPC call helper
 func Call(srv gfs.ServerAddress, rpcname string, args interface{}, reply interface{}) error {
 	c, errx := rpc.Dial("tcp", string(srv))
@@ -33,7 +47,7 @@ func CallAll(dst []gfs.ServerAddress, rpcname string, args interface{}) error {
 		}(d)
 	}
 	errList := ""
-	for _ = range dst {
+	for range dst {
 		if err := <-ch; err != nil {
 			errList += err.Error() + ";"
 		}

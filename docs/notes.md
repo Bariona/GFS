@@ -1,4 +1,4 @@
-- how to support `record append`, `sequential read` ?
+- how to support `record append`, `sequential read`?
 
 ### chunk size: 64MB  
 
@@ -6,15 +6,14 @@
 
 - pros: 
   - reduce metadata size
-  - 
-  <!-- TODO: -->
+  - more likely to perform many operations on a given chunk, reducing network overhead by keeping a persistent TCP connection.
 
 - cons: race condition happens (wr/rd at the same chunk) ↑, which leads to consistency problem.
 
 
 ### chunksever: 3 replicas
 
-Leases
+Use leases (timeout interval: 60s) to maintain a consistent mutation order across replicas. 
 
 ### master node: 1 (only one) 
 
@@ -29,7 +28,7 @@ Leases
 
 1. namespace: file name → array of chunk handles (nv, non-volatile)
 
-2. chunk handle → list of chunksevers (v, volatile) *because you can recover it by requiring severs during the reboot process
+2. chunk handle → list of chunksevers (v, volatile) *because you can recover it by requiring servers during the reboot process
 
       ​                              current version (nv)
 
@@ -38,6 +37,7 @@ Leases
       ​			      lease expiration (v)
 
 
+3. chunk version (nv, in order to detect Stale Replica)
 #### Optimizations
 
 1. **separate control flow (master) & data flow** (client $\leftrightarrow$ chunksever)
@@ -52,8 +52,7 @@ Leases
 
 ~~consensus algorithm (Paxos, Raft)~~
 
-in GFS, we consider            
-2 cases: metadata & file data.
+in GFS, we consider 2 cases: metadata & file data.
 
 #### Metadata 
 
@@ -88,7 +87,7 @@ wr: write to 3 replicas, a crash will let the master node recreate another chunk
 
 permission of writes: transferred from master to client (60s)
 
-> primary only decides the order of write (control flow), data flow doesn't have to go through it (instead adopt nearby principle)
+> *Primary* only decides the order of write (control flow), data flow doesn't have to go through it (instead adopt nearby principle)
 > 
 > \*On traditional master-slave strategy, data/control flow always flows from master to slave.
 
@@ -118,6 +117,19 @@ Requirement: write all 3 replicas.
 
 ![](static/pipeline.png)
 
+1. `master node` chooses a `primary node` (among those nodes who has the latest chunk version) and **then increases the chunk version** (注: 只有当master认为当前没有primary的时候才会increase).
+`master node` notifies primary and secondary nodes to increase the chunk version, then MS writes the #version.
+2. MS inform the client of the prim & secs and then the client cached those information.
+3. The client sends the data (starting to "propagate" among servers), waiting for all data to be stored locally on servers.
+4. Once all the replicas have acknowledged receiving the data, the client sends a write request to the primary. 
+The primary assigns consecutive serial numbers to all the mutations it receives, possibly from multiple clients, which provides the necessary serialization. It applies the mutation to its own local state in serial number order.
+5. The primary forwards the write request to all secondary replicas. Each secondary replica applies mutations in the same serial number order assigned by the primary.
+
+If a write by the application is large or straddles a chunk boundary, **GFS client code breaks** it down into multiple write operations.
+
+> If any secondary failed to apply the mutation order, then the Op returns `fail` to the client. Then, you are not guaranteed to read the correct chunk version.
+
+> Avoid split-brain: Lease only lasts for 60s.
 #### Data/Control flow split
 
 - [ ] overwrite: how to ensure consistency when several chunks succeeded & failed.
@@ -126,6 +138,7 @@ Requirement: write all 3 replicas.
 
 
 read Op:
+
 - metadata cache miss: query master node, then chunkserver
 - metadata cache hit: query chunkserver, if it doesn't have the corresponding chunk, query master again (meaning that the cache should be invalidated)
   - checksum.
@@ -153,3 +166,43 @@ COW (copy on write)
 
 ### GC
 
+
+
+### Master's Operations
+
+#### HeartBeat
+
+chunkserver $\rightarrow$ master: containing server's status
+
+
+
+namespace manager (e.g. `/d1/d2/.../dn/leaf`):
+
+#### Create (File) / Mkdir
+
+1. acquire read-locks on the directory names `/d1, /d1/d2, ..., /d1/d2/.../dn-1`
+2. acquire write-locks on `/d1/d2/.../dn` $\rightarrow$ in order to create a file/directory
+
+### GetFileInfo
+
+TODO: cached info locally?
+
+### GetChunkHandle
+
+GetChunkHandle returns the chunk handle of (path, index). If the requested index is bigger than the number of chunks of this path by exactly one, create one.
+
+create: 
+
+1. get 3 chunkservers
+   > use *HeartBeat* message to maintain alive servers
+2. add chunk
+
+### GetLeaseHolder
+
+GetLeaseHolder returns the chunkserver that holds the lease of a chunk (i.e. primary) and expire time of the lease. If no one has a lease, grant one to a replica it chooses.
+
+3.1 Para 2.
+
+### WriteChunk
+
+see the notes above

@@ -10,6 +10,9 @@
 *.a
 *.so
 
+bin
+pkg
+
 # Folders
 _obj
 _test

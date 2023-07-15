@@ -9,9 +9,11 @@ import (
 	"reflect"
 
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"io/ioutil"
+
+	log "github.com/sirupsen/logrus"
+
 	//"math/rand"
 	"os"
 	"path"
@@ -107,9 +109,14 @@ func TestMkdirDeleteList(t *testing.T) {
 }
 
 func TestRPCGetChunkHandle(t *testing.T) {
+	var r gfs.CreateFileReply
 	var r1, r2 gfs.GetChunkHandleReply
 	path := gfs.Path("/test1.txt")
-	err := m.RPCGetChunkHandle(gfs.GetChunkHandleArg{path, 0}, &r1)
+	err := m.RPCCreateFile(gfs.CreateFileArg{Path: path}, &r)
+	if err != nil {
+		t.Error(err)
+	}
+	err = m.RPCGetChunkHandle(gfs.GetChunkHandleArg{path, 0}, &r1)
 	if err != nil {
 		t.Error(err)
 	}
@@ -144,6 +151,10 @@ func TestWriteChunk(t *testing.T) {
 func TestReadChunk(t *testing.T) {
 	var r1 gfs.GetChunkHandleReply
 	p := gfs.Path("/TestWriteChunk.txt")
+	err := m.RPCCreateFile(gfs.CreateFileArg{p}, &gfs.CreateFileReply{})
+	if err != nil {
+		t.Error(err)
+	}
 	ch := make(chan error, N+1)
 	ch <- m.RPCGetChunkHandle(gfs.GetChunkHandleArg{p, 0}, &r1)
 	for i := 0; i < N; i++ {

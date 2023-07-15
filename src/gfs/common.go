@@ -1,6 +1,10 @@
 package gfs
 
-import "time"
+import (
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 type Path string
 type ServerAddress string
@@ -56,7 +60,7 @@ func (e Error) Error() string {
 
 // system config
 const (
-	LeaseExpire        = 2 * time.Second //1 * time.Minute
+	LeaseExpire        = 2 * time.Second // 1 * time.Minute
 	HeartbeatInterval  = 100 * time.Millisecond
 	BackgroundInterval = 200 * time.Millisecond //
 	ServerTimeout      = 1 * time.Second        //
@@ -70,3 +74,19 @@ const (
 	DownloadBufferExpire = 2 * time.Minute
 	DownloadBufferTick   = 10 * time.Second
 )
+
+func (path Path) ParseLeafname() (Path, string) {
+	dir, file := filepath.Split(string(path))
+	return Path(dir), file
+}
+
+// split path "/d1/d2/.../dn" or "/d1/d2/.../dn/" into [d1, d2, ..., dn]
+func (path *Path) GetPaths() []string {
+	str := string(*path)
+	if !strings.HasSuffix(str, "/") {
+		str += "/"
+	}
+
+	seg := strings.Split(str, "/")
+	return seg[1: len(seg) - 1]
+}
