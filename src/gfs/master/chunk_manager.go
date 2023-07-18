@@ -24,6 +24,7 @@ type chunkManager struct {
 type chunkInfo struct {
 	sync.RWMutex
 	location []gfs.ServerAddress// set of replica locations
+	version  gfs.ChunkVersion
 	primary  gfs.ServerAddress 	// primary chunkserver
 	expire   time.Time         	// lease expire time
 	path     gfs.Path
@@ -33,11 +34,6 @@ type fileInfo struct {
 	handles []gfs.ChunkHandle
 }
 
-type lease struct {
-	primary     gfs.ServerAddress
-	expire      time.Time
-	secondaries []gfs.ServerAddress
-}
 
 func newChunkManager() *chunkManager {
 	cm := &chunkManager{
@@ -58,7 +54,7 @@ func (cm *chunkManager) GetReplicas(handle gfs.ChunkHandle) ([]gfs.ServerAddress
 	defer cm.RUnlock()
 	replicas, ok := cm.chunk[handle]
 	if !ok {
-		return nil, fmt.Errorf("not such ChunkHandle", handle)
+		return nil, fmt.Errorf("not such ChunkHandle %v", handle)
 	}
 	return replicas.location, nil
 }
@@ -66,10 +62,10 @@ func (cm *chunkManager) GetReplicas(handle gfs.ChunkHandle) ([]gfs.ServerAddress
 // GetChunk returns the chunk handle for (path, index).
 func (cm *chunkManager) GetChunk(path gfs.Path, index gfs.ChunkIndex) (gfs.ChunkHandle, error) {
 	cm.RLock()
-	defer cm.RLock()
+	defer cm.RUnlock()
 	chunks, ok := cm.file[path]
 	if !ok {
-		return 0, fmt.Errorf("no such file ", path)
+		return 0, fmt.Errorf("no such file %v", path)
 	}
 	if int(index) >= len(chunks.handles) {
 		return 0, fmt.Errorf("chunk %v index out of bound %v", path, index)
@@ -81,7 +77,7 @@ func (cm *chunkManager) GetChunk(path gfs.Path, index gfs.ChunkIndex) (gfs.Chunk
 // GetLeaseHolder returns the chunkserver that holds the lease of a chunk
 // (i.e. primary) and expire time of the lease. If no one has a lease,
 // grant one to a replica it chooses.
-func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*lease, error) {
+func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, error) {
 	cm.Lock()
 	defer cm.Unlock()
 	chunkhandle, ok := cm.chunk[handle]
@@ -107,10 +103,10 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*lease, error) {
 		}
 	}
 
-	l := &lease {
-		primary: prim,
-		expire: expire_time,
-		secondaries: secondaries,
+	l := &gfs.Lease {
+		Primary: prim,
+		Expire: expire_time,
+		Secondaries: secondaries,
 	}
 	return l, nil
 }
@@ -122,16 +118,19 @@ func (cm *chunkManager) ExtendLease(handle gfs.ChunkHandle, primary gfs.ServerAd
 
 // CreateChunk creates a new chunk for path.
 func (cm *chunkManager) CreateChunk(path gfs.Path, addrs []gfs.ServerAddress) (gfs.ChunkHandle, error) {
+	// TODO: call chunkserver to create chunk
 	log.Info("Create Chunk ", addrs)
 	cm.Lock()
 	defer cm.Unlock()
 
+	
 	cm.numChunkHandle += 1
 	chunkhandle := cm.numChunkHandle
 	
 	cm.chunk[chunkhandle] = &chunkInfo{
 		path: path,
 		location: addrs,
+		version: gfs.ChunkVersion(1),
 	}
 
 	if _, ok := cm.file[path]; !ok {

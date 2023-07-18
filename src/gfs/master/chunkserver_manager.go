@@ -63,9 +63,9 @@ func (csm *chunkServerManager) ChooseServers(num int) ([]gfs.ServerAddress, erro
 	log.Info("ChooseServers")
 	csm.RLock()
 	defer csm.RUnlock()
-	for _, server := range csm.servers {
-		log.Info("server : ", server)
-	}
+	// for _, server := range csm.servers {
+	// 	log.Info("server : ", server)
+	// }
 
 	len := len(csm.servers)
 	var ret, addrs [] gfs.ServerAddress

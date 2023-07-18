@@ -53,15 +53,17 @@ func newDownloadBuffer(expire, tick time.Duration) *downloadBuffer {
 func (buf *downloadBuffer) New(handle gfs.ChunkHandle) gfs.DataBufferID {
 	now := time.Now()
 	timeStamp := now.Nanosecond() + now.Second()*1000 + now.Minute()*60*1000
-	return gfs.DataBufferID{handle, timeStamp}
+	return gfs.DataBufferID{Handle: handle, TimeStamp: timeStamp}
 }
 
+// load data[] into buffer[id] with the set expire time
 func (buf *downloadBuffer) Set(id gfs.DataBufferID, data []byte) {
 	buf.Lock()
 	defer buf.Unlock()
 	buf.buffer[id] = downloadItem{data, time.Now().Add(buf.expire)}
 }
 
+// return buffer[id]'s data[]
 func (buf *downloadBuffer) Get(id gfs.DataBufferID) ([]byte, bool) {
 	buf.Lock()
 	defer buf.Unlock()
@@ -73,6 +75,7 @@ func (buf *downloadBuffer) Get(id gfs.DataBufferID) ([]byte, bool) {
 	return item.data, ok
 }
 
+// delete buffer[id]
 func (buf *downloadBuffer) Delete(id gfs.DataBufferID) {
 	buf.Lock()
 	defer buf.Unlock()

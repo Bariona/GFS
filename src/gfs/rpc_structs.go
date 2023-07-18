@@ -17,8 +17,9 @@ type PushDataAndForwardReply struct {
 }
 
 type ForwardDataArg struct {
-	DataID DataBufferID
-	Data   []byte
+	DataID  	DataBufferID
+	Data   		[]byte
+	ChainOrd 	[]ServerAddress
 }
 type ForwardDataReply struct {
 	ErrorCode ErrorCode
@@ -102,10 +103,10 @@ type HeartbeatArg struct {
 }
 type HeartbeatReply struct{}
 
-type GetPrimaryAndSecondariesArg struct {
+type GetLeaseArg struct {
 	Handle ChunkHandle
 }
-type GetPrimaryAndSecondariesReply struct {
+type GetLeaseReply struct {
 	Primary     ServerAddress
 	Expire      time.Time
 	Secondaries []ServerAddress

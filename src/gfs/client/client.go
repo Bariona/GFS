@@ -12,13 +12,14 @@ import (
 // Client struct is the GFS client-side driver
 type Client struct {
 	master gfs.ServerAddress
-	buffer *clientBuffer
+	buffer *leaseBuffer
 }
 
 // NewClient returns a new gfs client.
 func NewClient(master gfs.ServerAddress) *Client {
 	return &Client {
 		master: master,
+		buffer: newLeaseBuffer(),
 	}
 }
 
@@ -75,7 +76,7 @@ func (c *Client) Read(path gfs.Path, offset gfs.Offset, data []byte) (n int, err
 			return 0, err
 		}
 		var read int
-		read, err = c.ReadChunk(chunkhandle, offset, data[l:r])
+		read, err = c.ReadChunk(chunkhandle, gfs.Offset(l % gfs.MaxChunkSize), data[l:r])
 		if err != nil {
 			return 0, nil
 		}
@@ -84,13 +85,13 @@ func (c *Client) Read(path gfs.Path, offset gfs.Offset, data []byte) (n int, err
 		}
 		cur += 1
 		getn += size
-		offset = gfs.Offset(int(offset) + size)
 	}
 	return getn, nil
 }
 
 // Write writes data to the file at specific offset.
 func (c *Client) Write(path gfs.Path, offset gfs.Offset, data []byte) error {
+	
 	return nil 
 }
 
@@ -111,12 +112,12 @@ func (c *Client) ReadChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byt
 		return 0, fmt.Errorf("no replicas of chunkhandle %v", handle)
 	}
 	if len(data) + int(offset) >= gfs.MaxChunkSize {
-		return 0, fmt.Errorf("read chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, data)
+		return 0, fmt.Errorf("read chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
 	}
 
 	index := rand.Intn(len(location))
 	
-	log.Info("read server ", index, location[index])
+	log.Printf("Client: read server %v Chunkindex %v, offset %v", location[index], index, offset)
 	r := &gfs.ReadChunkReply{Data: data}
 	err = util.Call(
 		location[index], 
@@ -140,8 +141,50 @@ func (c *Client) ReadChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byt
 // WriteChunk writes data to the chunk at specific offset.
 // len(data)+offset should be within chunk size.
 func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byte) error {
+	if len(data) + int(offset) >= gfs.MaxChunkSize {
+		return fmt.Errorf("write chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
+	}
+
+	lease, err := c.buffer.queryLease(c.master, handle)
+	if err != nil {
+		return err
+	}
+	location := lease.Secondaries
+	location = append(location, lease.Primary)
+	index := rand.Intn(len(location))
+
 	
-	return nil 
+	// propagate data
+	var r gfs.PushDataAndForwardReply
+	err = util.Call(
+		location[index], 
+		"ChunkServer.RPCPushDataAndForward", 
+		gfs.PushDataAndForwardArg {
+			Handle: handle,
+			Data: data,
+			ForwardTo: location,
+		},
+		&r,
+	)
+	// log.Info("propagate done. ### error: ", err)
+	if err != nil {
+		return nil
+	}
+	
+
+	// write data
+	err = util.Call(
+		lease.Primary,
+		"ChunkServer.RPCWriteChunk",
+		gfs.WriteChunkArg{
+			DataID: r.DataID,
+			Offset: offset,
+			Secondaries: lease.Secondaries,
+		},
+		&gfs.WriteChunkReply{},
+	)
+
+	return err
 }
 
 // AppendChunk appends data to a chunk.

@@ -29,6 +29,12 @@ type PathInfo struct {
 	Chunks int64
 }
 
+type Lease struct {
+	Primary     ServerAddress
+	Expire      time.Time
+	Secondaries []ServerAddress
+}
+
 type MutationType int
 
 const (

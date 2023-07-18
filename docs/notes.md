@@ -124,6 +124,8 @@ Requirement: write all 3 replicas.
 4. Once all the replicas have acknowledged receiving the data, the client sends a write request to the primary. 
 The primary assigns consecutive serial numbers to all the mutations it receives, possibly from multiple clients, which provides the necessary serialization. It applies the mutation to its own local state in serial number order.
 5. The primary forwards the write request to all secondary replicas. Each secondary replica applies mutations in the same serial number order assigned by the primary.
+6. The secondaries all reply to the primary indicating that they have completed the operation.
+7. The primary replies to the client. Any errors encountered at any of the replicas are reported to the client. In case of errors, the write may have succeeded at the primary and an arbitrary subset of the secondary replicas. (If it had failed at the primary, it would not have been assigned a serial number and forwarded.) The client request is considered to have failed, and the modified region is left in an inconsistent state. Our client code handles such errors by retrying the failed mutation. It will make a few attempts at steps (3) through (7) before falling back to a retry from the beginning of the write.
 
 If a write by the application is large or straddles a chunk boundary, **GFS client code breaks** it down into multiple write operations.
 
@@ -183,11 +185,11 @@ namespace manager (e.g. `/d1/d2/.../dn/leaf`):
 1. acquire read-locks on the directory names `/d1, /d1/d2, ..., /d1/d2/.../dn-1`
 2. acquire write-locks on `/d1/d2/.../dn` $\rightarrow$ in order to create a file/directory
 
-### GetFileInfo
+#### GetFileInfo
 
 TODO: cached info locally?
 
-### GetChunkHandle
+#### GetChunkHandle
 
 GetChunkHandle returns the chunk handle of (path, index). If the requested index is bigger than the number of chunks of this path by exactly one, create one.
 
@@ -197,12 +199,28 @@ create:
    > use *HeartBeat* message to maintain alive servers
 2. add chunk
 
-### GetLeaseHolder
+#### GetLeaseHolder
 
 GetLeaseHolder returns the chunkserver that holds the lease of a chunk (i.e. primary) and expire time of the lease. If no one has a lease, grant one to a replica it chooses.
 
 3.1 Para 2.
 
-### WriteChunk
+#### WriteChunk
+
+see the notes above
+
+
+
+### Chunkserver's Operations
+
+#### CreateChunk
+
+lazy allocation
+
+#### ReadChunk
+
+~~cache information~~
+
+#### WriteChunk
 
 see the notes above

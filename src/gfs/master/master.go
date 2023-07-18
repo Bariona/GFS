@@ -1,8 +1,8 @@
 package master
 
 import (
-	// "fmt"
 	"fmt"
+	"gfs/util"
 	"net"
 	"net/rpc"
 	"time"
@@ -10,7 +10,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"gfs"
-	// "gfs/util"
 )
 
 // Master Server struct
@@ -109,16 +108,16 @@ func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) 
 	return nil
 }
 
-// RPCGetPrimaryAndSecondaries returns lease holder and secondaries of a chunk.
+// RPCGetLease returns lease holder and secondaries of a chunk.
 // If no one holds the lease currently, grant one.
-func (m *Master) RPCGetPrimaryAndSecondaries(args gfs.GetPrimaryAndSecondariesArg, reply *gfs.GetPrimaryAndSecondariesReply) error {
+func (m *Master) RPCGetLease(args gfs.GetLeaseArg, reply *gfs.GetLeaseReply) error {
 	lease, err := m.cm.GetLeaseHolder(args.Handle)
 	if err != nil {
 		return err
 	}
-	reply.Expire = lease.expire
-	reply.Primary = lease.primary
-	reply.Secondaries = lease.secondaries
+	reply.Expire = lease.Expire
+	reply.Primary = lease.Primary
+	reply.Secondaries = lease.Secondaries
 	return nil
 }
 
@@ -190,6 +189,13 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 		return err
 	}
 	reply.Handle, err = m.cm.CreateChunk(args.Path, servers)
+	
+	for _, server := range servers {
+		err := util.Call(server, "ChunkServer.RPCCreateChunk", gfs.CreateChunkArg{Handle: reply.Handle}, &gfs.CreateChunkReply{})
+		if err != nil {
+			return err
+		}
+	}
 	return err
 }
 
