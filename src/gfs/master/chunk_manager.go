@@ -88,7 +88,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 	}
 
 	chunkhandle.Lock()
-	defer chunkhandle.RLock()
+	defer chunkhandle.Unlock()
 
 	var prim gfs.ServerAddress
 	var expire_time time.Time

@@ -78,7 +78,7 @@ func (c *Client) Read(path gfs.Path, offset gfs.Offset, data []byte) (n int, err
 		var read int
 		read, err = c.ReadChunk(chunkhandle, gfs.Offset(l % gfs.MaxChunkSize), data[l:r])
 		if err != nil {
-			return 0, nil
+			return 0, err
 		}
 		if read != size {
 			return 0, fmt.Errorf("Read error at chunkhandle %v, read %v, suppose read: %v", chunkhandle, read, size)
@@ -166,7 +166,7 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 		&r,
 	)
 	if err != nil {
-		return nil
+		return err
 	}
 	
 	// write data
@@ -185,12 +185,51 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 
 // AppendChunk appends data to a chunk.
 // Chunk offset of the start of data will be returned if success.
-// len(data) should be within max append size.
+// len(data) should be within 1/4 max append size.
 func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Offset, err error) {
 	
-	// if len(data) + int(offset) >= gfs.MaxChunkSize {
-	// 	return fmt.Errorf("write chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
-	// }
-	return offset, nil 
+	if len(data) >= gfs.MaxAppendSize {
+		return 0, fmt.Errorf("Append chunk %v exceed maximum chunksize with len(data) = %v", handle, len(data))
+	}
+	
+	lease, err := c.buffer.queryLease(c.master, handle)
+	if err != nil {
+		return 0, err
+	}
+	location := lease.Secondaries
+	location = append(location, lease.Primary)
+	index := rand.Intn(len(location))
+
+	// propagate data
+	var r gfs.PushDataAndForwardReply
+	err = util.Call(
+		location[index], 
+		"ChunkServer.RPCPushDataAndForward", 
+		gfs.PushDataAndForwardArg {
+			Handle: handle,
+			Data: data,
+			ForwardTo: location,
+		},
+		&r,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	var reply gfs.AppendChunkReply
+	err = util.Call(
+		lease.Primary, 
+		"ChunkServer.RPCAppendChunk", 
+		gfs.AppendChunkArg{
+			DataID: r.DataID,
+			Secondaries: lease.Secondaries,
+		},
+		&reply,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return reply.Offset, nil 
 }
  

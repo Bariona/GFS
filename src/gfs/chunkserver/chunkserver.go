@@ -40,9 +40,10 @@ type Mutation struct {
 
 type chunkInfo struct {
 	sync.RWMutex
+	length 				gfs.Offset
 	version       gfs.ChunkVersion               // version number of the chunk in disk
 	// newestVersion gfs.ChunkVersion               // allocated newest version number
-	mutations     map[gfs.ChunkVersion]*Mutation // mutation buffer
+	// mutations     map[gfs.ChunkVersion]*Mutation // mutation buffer
 }
 
 const (
@@ -61,6 +62,7 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 		pendingLeaseExtensions: new(util.ArraySet),
 		chunk: make(map[gfs.ChunkHandle]*chunkInfo),
 	}
+
 	rpcs := rpc.NewServer()
 	rpcs.Register(cs)
 	l, e := net.Listen("tcp", string(cs.address))
@@ -188,7 +190,8 @@ func (cs *ChunkServer) RPCCreateChunk(args gfs.CreateChunkArg, reply *gfs.Create
 	}
 	cs.chunk[args.Handle] = &chunkInfo{
 		version: gfs.ChunkVersion(1),
-		mutations: make(map[gfs.ChunkVersion]*Mutation),
+		length: 0,
+		// mutations: make(map[gfs.ChunkVersion]*Mutation),
 	}
 	return nil 
 }
@@ -261,7 +264,53 @@ func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChu
 // If the chunk size after appending the data will excceed the limit,
 // pad current chunk and ask the client to retry on the next chunk.
 func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.AppendChunkReply) error {
-	return nil 
+	data, ok := cs.dl.Get(args.DataID)
+	if !ok {
+		return fmt.Errorf("server: %v doesn't have data of ID %v" , cs.address, args.DataID)
+	}
+	cs.dl.Delete(args.DataID)
+
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.DataID.Handle]
+	cs.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
+	} 
+
+	ckinfo.Lock()
+	defer ckinfo.Unlock()
+	
+	// pad or append
+	var mtype gfs.MutationType
+	newlen := ckinfo.length + gfs.Offset(len(data))
+	reply.Offset = ckinfo.length
+
+	if newlen > gfs.MaxChunkSize {
+		mtype = gfs.MutationPad
+		ckinfo.length = gfs.MaxChunkSize
+		reply.ErrorCode = gfs.AppendExceedChunkSize
+	} else {
+		mtype = gfs.MutationAppend
+		ckinfo.length = newlen
+	}
+	
+	wait := make(chan error, 1)
+	go func() {
+		// do not call RPCApplyMutation to avoid re-lock ckinfo -> dead lock
+		wait <- cs.applyMutation(args.DataID.Handle, Mutation{mtype,	ckinfo.version,	data,	reply.Offset})
+	}()
+	
+	err := util.CallAll(args.Secondaries, "ChunkServer.RPCApplyMutation", gfs.ApplyMutationArg{mtype,	ckinfo.version,	args.DataID, reply.Offset})
+	if err != nil {
+		return err
+	}
+	err = <- wait
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // RPCApplyWriteChunk is called by primary to apply mutations
@@ -279,7 +328,7 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
 	} 
 
-	ckinfo.Lock()
+	ckinfo.Lock()	
 	defer ckinfo.Unlock()
 
 	err := cs.applyMutation(
@@ -311,18 +360,17 @@ func (cs *ChunkServer) RPCApplyCopy(args gfs.ApplyCopyArg, reply *gfs.ApplyCopyR
 }
 
 func (cs *ChunkServer) writeChunk(handle gfs.ChunkHandle, data []byte, offset gfs.Offset) error {
-	// cs.RLock()
-	// ckinfo, ok := cs.chunk[handle]
-	// if !ok {
-	// 	return fmt.Errorf("Server %v: chunk %v doesn't exist", cs.address, handle)
-	// }
-	// cs.RUnlock()
-
 	newlen := int(offset) + len(data)
 	if newlen > gfs.MaxChunkSize {
 		return fmt.Errorf("writeChunk %v exceed MaxChunkSize with offset %v, len(data): %v", handle, offset, len(data))
 	}
-	
+
+	cs.Lock()
+	ckinfo := cs.chunk[handle]
+	if newlen > int(ckinfo.length) {
+		ckinfo.length = gfs.Offset(newlen)
+	}
+	cs.Unlock()
 
 	filename := path.Join(cs.serverRoot, fmt.Sprint(handle))
 	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, perm)
@@ -345,14 +393,20 @@ func (cs *ChunkServer) writeChunk(handle gfs.ChunkHandle, data []byte, offset gf
 }
 
 func (cs *ChunkServer) applyMutation(handle gfs.ChunkHandle, args Mutation) error {
+	var err error
+	
 	switch args.mtype {
-	case gfs.MutationWrite:
-		err := cs.writeChunk(handle, args.data, args.offset)
-		if err != nil {
-			return err
-		}
+	case gfs.MutationWrite, gfs.MutationAppend:
+		err = cs.writeChunk(handle, args.data, args.offset)
+	case gfs.MutationPad:
+		data := []byte{0}
+		err = cs.writeChunk(handle, data, gfs.MaxChunkSize - 1)
 	default:
-		
+		return fmt.Errorf("no such mtype")
+	}
+
+	if err != nil {
+		return err
 	}
 	return nil
 }
