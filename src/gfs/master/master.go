@@ -104,7 +104,7 @@ func (m *Master) BackgroundActivity() error {
 // Lease extension request is included.
 func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) error {
 	m.csm.Heartbeat(args.Address)
-	// TODO: Lease Extensions
+	// TODO: Lease Extensions & First HeartBeat: information check
 	return nil
 }
 
@@ -188,8 +188,15 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 	if err != nil {
 		return err
 	}
+
 	reply.Handle, err = m.cm.CreateChunk(args.Path, servers)
-	
+
+	if err != nil {
+		return err
+	}
+
+	m.csm.AddChunk(servers, reply.Handle)
+
 	for _, server := range servers {
 		err := util.Call(server, "ChunkServer.RPCCreateChunk", gfs.CreateChunkArg{Handle: reply.Handle}, &gfs.CreateChunkReply{})
 		if err != nil {

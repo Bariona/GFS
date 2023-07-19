@@ -140,13 +140,14 @@ func TestWriteChunk(t *testing.T) {
 	ch := make(chan error, N+2)
 	ch <- m.RPCCreateFile(gfs.CreateFileArg{p}, &gfs.CreateFileReply{})	
 	ch <- m.RPCGetChunkHandle(gfs.GetChunkHandleArg{p, 0}, &r1)
+	
 	for i := 0; i < N; i++ {
 		go func(x int) {
 			ch <- c.WriteChunk(r1.Handle, gfs.Offset(x*2), []byte(fmt.Sprintf("%2d", x)))
 		}(i)
 	}
-	errorAll(ch, N+2, t)
 	
+	errorAll(ch, N+2, t)
 }
 
 func TestReadChunk(t *testing.T) {

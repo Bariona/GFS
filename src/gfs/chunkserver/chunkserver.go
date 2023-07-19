@@ -48,6 +48,7 @@ type chunkInfo struct {
 const (
 	perm = os.FileMode(0644)
 )
+
 // NewAndServe starts a chunkserver and return the pointer to it.
 func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkServer {
 	cs := &ChunkServer{

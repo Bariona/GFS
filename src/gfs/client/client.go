@@ -152,7 +152,6 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 	location := lease.Secondaries
 	location = append(location, lease.Primary)
 	index := rand.Intn(len(location))
-
 	
 	// propagate data
 	var r gfs.PushDataAndForwardReply
@@ -166,12 +165,10 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 		},
 		&r,
 	)
-	// log.Info("propagate done. ### error: ", err)
 	if err != nil {
 		return nil
 	}
 	
-
 	// write data
 	err = util.Call(
 		lease.Primary,
@@ -183,7 +180,6 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 		},
 		&gfs.WriteChunkReply{},
 	)
-
 	return err
 }
 
@@ -191,6 +187,10 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 // Chunk offset of the start of data will be returned if success.
 // len(data) should be within max append size.
 func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Offset, err error) {
+	
+	// if len(data) + int(offset) >= gfs.MaxChunkSize {
+	// 	return fmt.Errorf("write chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
+	// }
 	return offset, nil 
 }
  

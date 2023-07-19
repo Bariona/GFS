@@ -45,6 +45,7 @@ func newChunkManager() *chunkManager {
 
 // RegisterReplica adds a replica for a chunk
 func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
+
 	return nil
 }
 
@@ -78,12 +79,17 @@ func (cm *chunkManager) GetChunk(path gfs.Path, index gfs.ChunkIndex) (gfs.Chunk
 // (i.e. primary) and expire time of the lease. If no one has a lease,
 // grant one to a replica it chooses.
 func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, error) {
-	cm.Lock()
-	defer cm.Unlock()
+	cm.RLock()
 	chunkhandle, ok := cm.chunk[handle]
+	cm.RUnlock()
+
 	if !ok {
 		return nil, fmt.Errorf("no such ChunkHandle %v", handle)
 	}
+
+	chunkhandle.Lock()
+	defer chunkhandle.RLock()
+
 	var prim gfs.ServerAddress
 	var expire_time time.Time
 	secondaries := make([]gfs.ServerAddress, 0, len(chunkhandle.location) - 1)
@@ -113,17 +119,31 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 
 // ExtendLease extends the lease of chunk if the lease holder is primary.
 func (cm *chunkManager) ExtendLease(handle gfs.ChunkHandle, primary gfs.ServerAddress) error {
+	cm.RLock()
+	ck, ok := cm.chunk[handle]
+	cm.RUnlock()
+	
+	if !ok {
+		return fmt.Errorf("Master: no such chunk ", handle)
+	}
+
+	ck.Lock()
+	defer ck.Unlock()
+
+	if ck.primary == primary && ck.expire.After(time.Now()) {
+		ck.expire = time.Now().Add(gfs.LeaseExpire)
+	} else {
+		return fmt.Errorf("%v doesn't hold the lease anymore", handle)
+	}
 	return nil
 }
 
 // CreateChunk creates a new chunk for path.
 func (cm *chunkManager) CreateChunk(path gfs.Path, addrs []gfs.ServerAddress) (gfs.ChunkHandle, error) {
-	// TODO: call chunkserver to create chunk
 	log.Info("Create Chunk ", addrs)
 	cm.Lock()
 	defer cm.Unlock()
 
-	
 	cm.numChunkHandle += 1
 	chunkhandle := cm.numChunkHandle
 	
