@@ -146,6 +146,30 @@ func (m *Master) RPCGetFileInfo(args gfs.GetFileInfoArg, reply *gfs.GetFileInfoR
 	return err
 }
 
+
+// RPCGetChunkNum returns the number of chunk handles of path.
+func (m *Master) RPCGetChunkNum(args gfs.GetChunkNumArg, reply *gfs.GetChunkNumReply) error {
+	path, filename := args.Path.ParseLeafname()
+	paths := path.GetPaths()
+
+	node, err := m.nm.lockParents(paths, true)
+	defer m.nm.unlockParents(paths, true)
+	if err != nil {
+		return err
+	}
+
+	file, ok := node.children[filename]
+	if !ok {
+		return fmt.Errorf("file %v doesn't exist", filename)
+	}
+
+	file.RLock()
+	reply.Cnt = int(file.chunks)
+	file.RUnlock()
+
+	return err
+}
+
 // RPCGetChunkHandle returns the chunk handle of (path, index).
 // If the requested index is bigger than the number of chunks of this path by exactly one, create one.
 func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChunkHandleReply) error {

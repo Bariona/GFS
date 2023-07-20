@@ -293,6 +293,7 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 	} else {
 		mtype = gfs.MutationAppend
 		ckinfo.length = newlen
+		reply.ErrorCode = gfs.Success
 	}
 	
 	wait := make(chan error, 1)
@@ -359,6 +360,7 @@ func (cs *ChunkServer) RPCApplyCopy(args gfs.ApplyCopyArg, reply *gfs.ApplyCopyR
 	return nil 
 }
 
+// writeChunk is an auxiliary function that helps handle writing
 func (cs *ChunkServer) writeChunk(handle gfs.ChunkHandle, data []byte, offset gfs.Offset) error {
 	newlen := int(offset) + len(data)
 	if newlen > gfs.MaxChunkSize {

@@ -124,7 +124,7 @@ func (cm *chunkManager) ExtendLease(handle gfs.ChunkHandle, primary gfs.ServerAd
 	cm.RUnlock()
 	
 	if !ok {
-		return fmt.Errorf("Master: no such chunk ", handle)
+		return fmt.Errorf("Master: no such chunk %v", handle)
 	}
 
 	ck.Lock()

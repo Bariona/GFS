@@ -5,6 +5,7 @@ import (
 	"gfs"
 	"gfs/util"
 	"math/rand"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -52,6 +53,17 @@ func (c *Client) GetChunkHandle(path gfs.Path, index gfs.ChunkIndex) (gfs.ChunkH
 	return r.Handle, err
 }
 
+// GetChunkNum returns the chunk handle of (path, index).
+// If the chunk doesn't exist, master will create one.
+func (c *Client) GetChunkNum(path gfs.Path) (int, error) {
+	var r gfs.GetChunkNumReply
+	err := util.Call(c.master, "Master.RPCGetChunkNum", gfs.GetChunkHandleArg{Path: path}, &r)
+	if r.Cnt == 0 { // empty file has 1 chunk
+		r.Cnt = 1
+	}
+	return r.Cnt, err
+}
+
 // GetChunkReplicas returns the replicas of the corresponding chunkhandle.
 func (c *Client) GetChunkReplicas(handle gfs.ChunkHandle) ([]gfs.ServerAddress, error) {
 	var r gfs.GetReplicasReply
@@ -97,7 +109,42 @@ func (c *Client) Write(path gfs.Path, offset gfs.Offset, data []byte) error {
 
 // Append appends data to the file. Offset of the beginning of appended data is returned.
 func (c *Client) Append(path gfs.Path, data []byte) (offset gfs.Offset, err error) {
-	return offset, nil 
+	cnt, err := c.GetChunkNum(path)
+	if err != nil {
+		return 0, err
+	}
+	index := gfs.ChunkIndex(cnt - 1)
+	
+	var handle gfs.ChunkHandle
+	var chunkOffset gfs.Offset
+	for {
+		handle, err = c.GetChunkHandle(path, index)
+		if err != nil {
+			return 0, err
+		}
+
+		// to guarantee that append at least once
+		for {
+			chunkOffset, err = c.AppendChunk(handle, data)
+			if err == nil || err.(gfs.Error).Code == gfs.AppendExceedChunkSize {
+				break
+			}
+			log.Warning("chunk ", handle, " failed at appending, retry again: ", err)
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		if err == nil || err.(gfs.Error).Code != gfs.AppendExceedChunkSize {
+			break
+		}
+		index++
+		log.Printf("padding %v, retry", index)
+	}
+
+	if err != nil {
+		return 
+	}
+	offset = gfs.Offset(index) * gfs.MaxChunkSize + chunkOffset
+	return 
 }
 
 // ReadChunk reads data from the chunk at specific offset.
@@ -226,10 +273,13 @@ func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Of
 		},
 		&reply,
 	)
-	if err != nil {
-		return 0, err
-	}
 
-	return reply.Offset, nil 
+	if err != nil {
+		return reply.Offset, gfs.Error{gfs.UnknownError, err.Error()}
+	}
+	if reply.ErrorCode == gfs.AppendExceedChunkSize {
+		return reply.Offset, gfs.Error{reply.ErrorCode, "padding"}
+	}
+	return reply.Offset, nil
 }
  

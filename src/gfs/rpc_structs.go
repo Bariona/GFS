@@ -165,3 +165,11 @@ type GetChunkHandleArg struct {
 type GetChunkHandleReply struct {
 	Handle ChunkHandle
 }
+
+type GetChunkNumArg struct {
+	Path  Path
+}
+type GetChunkNumReply struct {
+	Cnt int
+}
+

@@ -56,7 +56,7 @@ func (csm *chunkServerManager) AddChunk(addrs []gfs.ServerAddress, handle gfs.Ch
 			log.Warning("Master: no such server", addr)
 		}
 		if server.chunks[handle] {
-			log.Warning("Master: server %v already has chunk %v", addr, handle)
+			log.Warning("Master: server ", addr, " already has chunk ", handle)
 		}
 		server.chunks[handle] = true
 	}
