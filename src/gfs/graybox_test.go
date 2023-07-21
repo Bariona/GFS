@@ -168,7 +168,7 @@ func TestReadChunk(t *testing.T) {
 			if n != 2 {
 				t.Error("should read exactly 2 bytes but", n, "instead")
 			} else if !reflect.DeepEqual(expected, buf) {
-				t.Error("expected (", expected, ") != buf (", buf, ")")
+  				t.Error("expected (", expected, ") != buf (", buf, ")")
 			}
 		}(i)
 	}
@@ -327,6 +327,7 @@ func TestWriteReadBigData(t *testing.T) {
 	ch <- err
 
 	if n != size {
+		t.Error("size: ", size, " read: ", n)
 		t.Error("read counter is wrong")
 	}
 	if !reflect.DeepEqual(expected, buf) {
@@ -581,6 +582,7 @@ func TestShutdownInAppend(t *testing.T) {
 		if key == -1 {
 			t.Error("incorrect data", buf)
 		} else {
+			// log.Info("read key: ", key)
 			delete(todelete, key)
 		}
 	}

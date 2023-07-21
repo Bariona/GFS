@@ -6,6 +6,15 @@ a toy implementation of the Google File System(GFS) in golang.
 
 greybox_test.go: 1 master 5 chunkservers 
 
+### To do List
+
+- [ ] Fault Tolerance
+    1. checksum
+    2. stale replica detect
+    3. WAL log
+
+- [ ] no global time: then how to determine Lease Expiration?
+
 
 ### Reference
 

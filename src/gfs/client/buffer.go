@@ -32,6 +32,8 @@ func (l *leaseBuffer) queryLease(m gfs.ServerAddress, handle gfs.ChunkHandle) (g
 		}
 	}
 
+	// log.Printf("\033[34mClient\033[0m: Lease of chunk %v expired", handle)
+
 	var r gfs.GetLeaseReply
 	err := util.Call(m, "Master.RPCGetLease", gfs.GetLeaseArg{Handle: handle}, &r)
 	if err != nil {

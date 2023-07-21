@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gfs"
 	"gfs/util"
+	"io"
 	"math/rand"
 	"time"
 
@@ -53,8 +54,7 @@ func (c *Client) GetChunkHandle(path gfs.Path, index gfs.ChunkIndex) (gfs.ChunkH
 	return r.Handle, err
 }
 
-// GetChunkNum returns the chunk handle of (path, index).
-// If the chunk doesn't exist, master will create one.
+// GetChunkNum returns the chunk handle of the file of the path
 func (c *Client) GetChunkNum(path gfs.Path) (int, error) {
 	var r gfs.GetChunkNumReply
 	err := util.Call(c.master, "Master.RPCGetChunkNum", gfs.GetChunkHandleArg{Path: path}, &r)
@@ -79,31 +79,79 @@ func (c *Client) Read(path gfs.Path, offset gfs.Offset, data []byte) (n int, err
 	cur := offset / gfs.MaxChunkSize
 	end := (bound - 1) / gfs.MaxChunkSize
 	getn := 0
+
+	var handle gfs.ChunkHandle
 	for int(cur) <= end {
+		// log.Info("Read cur: ", cur, " ", end)
 		l := util.Max(int(offset), int(cur * gfs.MaxChunkSize))
 		r := util.Min(bound, int((cur + 1) * gfs.MaxChunkSize))
 		size := r - l
-		chunkhandle, err := c.GetChunkHandle(path, gfs.ChunkIndex(cur))
+		handle, err = c.GetChunkHandle(path, gfs.ChunkIndex(cur))
 		if err != nil {
+			// log.Info("getchunk ", err)
 			return 0, err
 		}
 		var read int
-		read, err = c.ReadChunk(chunkhandle, gfs.Offset(l % gfs.MaxChunkSize), data[l:r])
-		if err != nil {
-			return 0, err
+		for {
+			read, err = c.ReadChunk(handle, gfs.Offset(l % gfs.MaxChunkSize), data[getn : getn + size])
+			if err == nil {
+				break
+			} 
+			if e, ok := err.(gfs.Error); ok && e.Code == gfs.ReadEOF {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+			log.Info("wtf? retry read ", err)
 		}
-		if read != size {
-			return 0, fmt.Errorf("Read error at chunkhandle %v, read %v, suppose read: %v", chunkhandle, read, size)
-		}
+		// if read != size {
+		// 	log.Printf("Read error at chunkhandle %v, read %v, suppose read: %v", chunkhandle, read, size)
+		// }
 		cur += 1
-		getn += size
+		getn += read
+		if err != nil {
+			break
+		}
 	}
-	return getn, nil
+	// log.Info("Read ", getn, " ", len(data), " error: ", err)
+	if err != nil && err.(gfs.Error).Code == gfs.ReadEOF {
+		return getn, io.EOF
+	}
+	return getn, err
 }
 
 // Write writes data to the file at specific offset.
 func (c *Client) Write(path gfs.Path, offset gfs.Offset, data []byte) error {
-	
+	bound := int(offset) + len(data)
+	cur := offset / gfs.MaxChunkSize
+	end := (bound - 1) / gfs.MaxChunkSize
+
+	var getn int 
+	// log.Info("Write: ", path, " ", offset, " ", len(data))
+	for int(cur) <= end {
+		l := util.Max(int(offset), int(cur * gfs.MaxChunkSize))
+		r := util.Min(bound, int((cur + 1) * gfs.MaxChunkSize))
+		chunkhandle, err := c.GetChunkHandle(path, gfs.ChunkIndex(cur))
+		size := r - l
+		if err != nil {
+			return err
+		}
+
+		for {
+			err = c.WriteChunk(chunkhandle, gfs.Offset(l % gfs.MaxChunkSize), data[getn : getn + size])
+			if err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+			log.Info("wtf? retry write: ERROR ", err)
+		}
+		if err != nil {
+			return err
+		}
+
+		cur += 1
+		getn += size
+	}
+	log.Info("Write: ", getn)
 	return nil 
 }
 
@@ -126,16 +174,23 @@ func (c *Client) Append(path gfs.Path, data []byte) (offset gfs.Offset, err erro
 		// to guarantee that append at least once
 		for {
 			chunkOffset, err = c.AppendChunk(handle, data)
-			if err == nil || err.(gfs.Error).Code == gfs.AppendExceedChunkSize {
+			if err == nil {
+				break
+			} 
+			if e, ok := err.(gfs.Error); ok && e.Code == gfs.AppendExceedChunkSize {
 				break
 			}
 			log.Warning("chunk ", handle, " failed at appending, retry again: ", err)
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		if err == nil || err.(gfs.Error).Code != gfs.AppendExceedChunkSize {
+		if err == nil {
+			break
+		} 
+		if e, ok := err.(gfs.Error); ok && e.Code != gfs.AppendExceedChunkSize {
 			break
 		}
+		
 		index++
 		log.Printf("padding %v, retry", index)
 	}
@@ -158,13 +213,13 @@ func (c *Client) ReadChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byt
 	if len(location) == 0 {
 		return 0, fmt.Errorf("no replicas of chunkhandle %v", handle)
 	}
-	if len(data) + int(offset) >= gfs.MaxChunkSize {
+	if len(data) + int(offset) > gfs.MaxChunkSize {
 		return 0, fmt.Errorf("read chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
 	}
 
 	index := rand.Intn(len(location))
 	
-	log.Printf("Client: read server %v Chunkindex %v, offset %v", location[index], index, offset)
+	// log.Printf("Client: read server %v Chunkindex %v, offset %v", location[index], index, offset)
 	r := &gfs.ReadChunkReply{Data: data}
 	err = util.Call(
 		location[index], 
@@ -176,19 +231,20 @@ func (c *Client) ReadChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byt
 		},
 		&r,
 	)
-	if err != nil { // unknown error
-		return 0, err
-	}
 	if r.ErrorCode == gfs.ReadEOF {
 		return r.Length, gfs.Error{Code: r.ErrorCode, Err: "ReadEOF"}
 	}
+	if err != nil { // unknown error  
+		return 0, err
+	}
+	
 	return r.Length, nil
 }
 
 // WriteChunk writes data to the chunk at specific offset.
 // len(data)+offset should be within chunk size.
 func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byte) error {
-	if len(data) + int(offset) >= gfs.MaxChunkSize {
+	if len(data) + int(offset) > gfs.MaxChunkSize {
 		return fmt.Errorf("write chunk %v exceed maximum chunksize with offset %v, len(data) = %v", handle, offset, len(data))
 	}
 
@@ -245,6 +301,7 @@ func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Of
 	}
 	location := lease.Secondaries
 	location = append(location, lease.Primary)
+	// log.Info("Append: available server : ", location, " data: ", data[1] - '0')
 	index := rand.Intn(len(location))
 
 	// propagate data

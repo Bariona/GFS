@@ -97,6 +97,67 @@ func (m *Master) Shutdown() {
 // BackgroundActivity does all the background activities:
 // dead chunkserver handling, garbage collection, stale replica detection, etc
 func (m *Master) BackgroundActivity() error {
+	deadck := make(map[gfs.ChunkHandle]bool)
+	deadAddrs := m.csm.DetectDeadServers()
+	for _, addr := range deadAddrs {
+		handles, err := m.csm.RemoveServer(addr)
+		log.Info("DeadServer: ", addr, " handles: ", handles)
+		if err != nil {
+			return err
+		}
+		for _, handle := range handles {
+			deadck[handle] = true
+			m.cm.RemoveReplica(handle, addr)
+		}
+	}
+	for handle, ok := range deadck {
+		if !ok {
+			continue
+		}
+		location, err := m.cm.GetReplicas(handle)
+		if err != nil {
+			return err
+		}
+		if len(location) < gfs.MinimumNumReplicas {
+			// need re-replica
+			// TODO: set chunk handling priority, pick existing chunkserver according to disk-util etc.
+			// replicaNum := gfs.DefaultNumReplicas - len(location)
+			// for i := 1; i <= replicaNum; i++ {
+				err := m.reReplication(handle)
+				if err != nil {
+					return err
+				}
+			// }
+		}
+	} 
+	return nil
+}
+
+func (m *Master) reReplication(handle gfs.ChunkHandle) error {
+	from, to, err := m.csm.ChooseReReplication(handle)
+	log.Printf("Master: Re-replica from(%v) to(%v), handle: %v", from, to, handle)
+	if err != nil {
+		return err
+	}
+	// send data & write down
+	var r gfs.CreateChunkReply
+	err = util.Call(to, "ChunkServer.RPCCreateChunk", gfs.CreateChunkArg{Handle: handle}, &r)
+	if err != nil {
+		return err
+	}
+
+	var r1 gfs.SendCopyReply
+	err = util.Call(from, "ChunkServer.RPCSendCopy", gfs.SendCopyArg{Handle: handle, Address: to}, &r1)
+	if err != nil {
+		return err
+	}
+
+	// update info 
+	err = m.cm.RegisterReplica(handle, to)
+	if err != nil {
+		return err
+	}
+	m.csm.AddChunk([]gfs.ServerAddress{to}, handle)
 	return nil
 }
 
@@ -147,7 +208,7 @@ func (m *Master) RPCGetFileInfo(args gfs.GetFileInfoArg, reply *gfs.GetFileInfoR
 }
 
 
-// RPCGetChunkNum returns the number of chunk handles of path.
+// RPCGetChunkNum returns the number of chunk handles of the file of the path.
 func (m *Master) RPCGetChunkNum(args gfs.GetChunkNumArg, reply *gfs.GetChunkNumReply) error {
 	path, filename := args.Path.ParseLeafname()
 	paths := path.GetPaths()
@@ -214,7 +275,6 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 	}
 
 	reply.Handle, err = m.cm.CreateChunk(args.Path, servers)
-
 	if err != nil {
 		return err
 	}

@@ -55,7 +55,7 @@ func (csm *chunkServerManager) AddChunk(addrs []gfs.ServerAddress, handle gfs.Ch
 		if !ok {
 			log.Warning("Master: no such server", addr)
 		}
-		if server.chunks[handle] {
+		if exist, ok := server.chunks[handle]; ok && exist {
 			log.Warning("Master: server ", addr, " already has chunk ", handle)
 		}
 		server.chunks[handle] = true
@@ -66,7 +66,25 @@ func (csm *chunkServerManager) AddChunk(addrs []gfs.ServerAddress, handle gfs.Ch
 // called when the replicas number of a chunk is less than gfs.MinimumNumReplicas
 // returns two server address, the master will call 'from' to send a copy to 'to'
 func (csm *chunkServerManager) ChooseReReplication(handle gfs.ChunkHandle) (from, to gfs.ServerAddress, err error) {
-	return "", "", nil
+	csm.RLock()
+	defer csm.RUnlock()
+
+	from = ""
+	to = ""
+	err = nil
+
+	for addr, info := range csm.servers {
+		if exist, ok := info.chunks[handle]; ok && exist {
+			from = addr
+		} else {
+			to = addr
+		}
+		if from != "" && to != "" {
+			return
+		}
+	}
+	err = fmt.Errorf("Master: no enough servers for Re-replication, handle ", handle)
+	return 
 }
 
 // ChooseServers returns servers to store new chunk.
@@ -75,9 +93,6 @@ func (csm *chunkServerManager) ChooseServers(num int) ([]gfs.ServerAddress, erro
 	log.Info("ChooseServers")
 	csm.RLock()
 	defer csm.RUnlock()
-	// for _, server := range csm.servers {
-	// 	log.Info("server : ", server)
-	// }
 
 	len := len(csm.servers)
 	var ret, addrs [] gfs.ServerAddress
@@ -105,20 +120,20 @@ func Sample() {
 
 // DetectDeadServers detects disconnected chunkservers according to last heartbeat time
 func (csm *chunkServerManager) DetectDeadServers() []gfs.ServerAddress {
-	csm.Lock()
-	defer csm.Unlock()
+	csm.RLock()
+	defer csm.RUnlock()
 
 	deadServers := make([]gfs.ServerAddress, 0)
 	for addr, server := range csm.servers {
-		if server.lastHeartbeat.Before(time.Now()) {
+		expireTime := server.lastHeartbeat.Add(gfs.ServerTimeout)
+		if expireTime.Before(time.Now()) {
 			deadServers = append(deadServers, addr)
 		}
 	}
 
-	for _, addr := range deadServers {
-		delete(csm.servers, addr)
-	}
-
+	// for _, addr := range deadServers {
+	// 	delete(csm.servers, addr)
+	// }
 	return deadServers
 }
 
@@ -129,7 +144,6 @@ func (csm *chunkServerManager) RemoveServer(addr gfs.ServerAddress) (handles []g
 	defer csm.Unlock()
 
 	server, ok := csm.servers[addr]
-
 	if !ok {
 		return nil, fmt.Errorf("Master: server %v doesn't exist", addr)
 	}
@@ -143,5 +157,6 @@ func (csm *chunkServerManager) RemoveServer(addr gfs.ServerAddress) (handles []g
 		}
 	}
 
+	delete(csm.servers, addr)
 	return handles, nil
 }

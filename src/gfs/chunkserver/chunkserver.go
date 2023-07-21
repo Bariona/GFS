@@ -186,6 +186,12 @@ func (cs *ChunkServer) RPCCreateChunk(args gfs.CreateChunkArg, reply *gfs.Create
 	cs.Lock()
 	defer cs.Unlock()
 	if _, ok := cs.chunk[args.Handle]; ok {
+		log.Info("ASdfasdfASFDFs ", args.Handle)
+		array := make([]gfs.ChunkHandle, 0, 1)
+		for i, _ := range cs.chunk {
+			array = append(array, i)
+		}
+		log.Info("cur handles: ", array)
 		return fmt.Errorf("chunk %v has exist on server %v", args.Handle, cs.address)
 	}
 	cs.chunk[args.Handle] = &chunkInfo{
@@ -208,19 +214,12 @@ func (cs *ChunkServer) RPCReadChunk(args gfs.ReadChunkArg, reply *gfs.ReadChunkR
 	ckinfo.RLock()
 	defer ckinfo.RUnlock()
 
-	// read file
-	filename := path.Join(cs.serverRoot, fmt.Sprint(args.Handle))
-	file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, perm)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
 	reply.Data = make([]byte, args.Length)
-	reply.Length, err = file.ReadAt(reply.Data, int64(args.Offset))
+	var err error
+	reply.Length, err = cs.readChunk(args.Handle, args.Offset, reply.Data)
 	// fileinfo, _ := os.Stat(filename)
 	// log.Info(fileinfo.Size())
-	log.Printf("Server %v: read chunk %v at %v with length %v", cs.address, args.Handle, args.Offset, reply.Length)
+	// log.Printf("Server %v: read chunk %v at %v with length %v, buf len: %v, err %v", cs.address, args.Handle, args.Offset, reply.Length, len(reply.Data), err)
 
 	if err == io.EOF {
 		reply.ErrorCode = gfs.ReadEOF
@@ -351,13 +350,68 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 
 // RPCSendCCopy is called by master, send the whole copy to given address
 func (cs *ChunkServer) RPCSendCopy(args gfs.SendCopyArg, reply *gfs.SendCopyReply) error {
-	return nil 
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.Handle]
+	cs.RUnlock()
+	if !ok {
+		return fmt.Errorf("no such chunk %v while RPCSendCopy at %v", args.Handle, cs.address)
+	}
+
+	ckinfo.RLock()
+	defer ckinfo.RUnlock()
+
+	data := make([]byte, ckinfo.length)
+	len, err := cs.readChunk(args.Handle, gfs.Offset(0), data)
+	if err != nil || len != int(ckinfo.length) {
+		return err
+	}
+
+	err = util.Call(
+		args.Address, 
+		"ChunkServer.RPCApplyCopy", 
+		gfs.ApplyCopyArg{
+			Handle: args.Handle,
+			Data: data,
+			Version: ckinfo.version,
+		},
+		&gfs.ApplyCopyReply{},
+	)
+
+	return err
 }
 
 // RPCSendCCopy is called by another replica
 // rewrite the local version to given copy data
 func (cs *ChunkServer) RPCApplyCopy(args gfs.ApplyCopyArg, reply *gfs.ApplyCopyReply) error {
-	return nil 
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.Handle]
+	cs.RUnlock()
+	if !ok {
+		return fmt.Errorf("no such chunk %v while RPCApplyCopy at %v", args.Handle, cs.address)
+	}
+
+	ckinfo.Lock()
+	ckinfo.version = args.Version
+	ckinfo.Unlock()
+	
+	err := cs.writeChunk(args.Handle, args.Data, gfs.Offset(0))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// readChunk is an auxiliary function that helps handle reading with locking
+func (cs *ChunkServer) readChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []byte) (int, error) {
+	filename := path.Join(cs.serverRoot, fmt.Sprint(handle))
+	file, err := os.OpenFile(filename, os.O_RDONLY|os.O_CREATE, perm)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	var len int
+	len, err = file.ReadAt(data, int64(offset))
+	return len, err
 }
 
 // writeChunk is an auxiliary function that helps handle writing

@@ -43,8 +43,42 @@ func newChunkManager() *chunkManager {
 	return cm
 }
 
+// RemoveReplica adds a replica for a chunk
+func (cm *chunkManager) RemoveReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
+	cm.RLock()
+	ckinfo, ok := cm.chunk[handle]
+	cm.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("Master: RemoveReplica no such handle ", handle)
+	}
+
+	ckinfo.Lock()
+	defer ckinfo.Unlock()
+	newlocation := make([]gfs.ServerAddress, 0, len(ckinfo.location) - 1)
+	for _, a := range ckinfo.location {
+		if a != addr {
+			newlocation = append(newlocation, a)
+		}
+	}
+	ckinfo.location = newlocation
+	ckinfo.expire = time.Now() // TODO: expire it now ?
+	return nil
+}
+
 // RegisterReplica adds a replica for a chunk
 func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
+	cm.RLock()
+	ckinfo, ok := cm.chunk[handle]
+	cm.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("Master: ResigerReplica no such Chunk", handle)
+	}
+
+	ckinfo.Lock()
+	defer ckinfo.Unlock()
+	ckinfo.location = append(ckinfo.location, addr)
 
 	return nil
 }
@@ -91,16 +125,16 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 	defer chunkhandle.Unlock()
 
 	var prim gfs.ServerAddress
-	var expire_time time.Time
+	var expireTime time.Time
 	secondaries := make([]gfs.ServerAddress, 0, len(chunkhandle.location) - 1)
 	if chunkhandle.expire.IsZero() || time.Now().After(chunkhandle.expire) {
 		// grant a primary
 		index := rand.Intn(len(chunkhandle.location))
 		prim = chunkhandle.location[index]
-		expire_time = time.Now().Add(gfs.LeaseExpire)
+		expireTime = time.Now().Add(gfs.LeaseExpire)
 	} else {
 		prim = chunkhandle.primary
-		expire_time = chunkhandle.expire
+		expireTime = chunkhandle.expire
 	}
 	
 	for _, addr := range chunkhandle.location {
@@ -111,7 +145,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 
 	l := &gfs.Lease {
 		Primary: prim,
-		Expire: expire_time,
+		Expire: expireTime,
 		Secondaries: secondaries,
 	}
 	return l, nil
