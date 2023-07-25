@@ -110,6 +110,7 @@ func (m *Master) BackgroundActivity() error {
 			m.cm.RemoveReplica(handle, addr)
 		}
 	}
+
 	for handle, ok := range deadck {
 		if !ok {
 			continue
@@ -121,15 +122,23 @@ func (m *Master) BackgroundActivity() error {
 		if len(location) < gfs.MinimumNumReplicas {
 			// need re-replica
 			// TODO: set chunk handling priority, pick existing chunkserver according to disk-util etc.
-			// replicaNum := gfs.DefaultNumReplicas - len(location)
-			// for i := 1; i <= replicaNum; i++ {
-				err := m.reReplication(handle)
-				if err != nil {
-					return err
-				}
-			// }
+			if len(location) == 0 {
+				log.Warn("ChunkHandle ", handle, " has lost in all replicas")
+				continue
+			}
+			m.cm.Lock()
+			m.cm.reReplicas = append(m.cm.reReplicas, handle)
+			m.cm.Unlock()
 		}
 	} 
+
+	handles := m.cm.GetRereplicas()
+	for _, handle := range handles {
+		err := m.reReplication(handle)
+		if err != nil {
+			log.Warn("Re-replication: ", err)
+		}
+	}
 	return nil
 }
 
@@ -164,8 +173,23 @@ func (m *Master) reReplication(handle gfs.ChunkHandle) error {
 // RPCHeartbeat is called by chunkserver to let the master know that a chunkserver is alive.
 // Lease extension request is included.
 func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) error {
-	m.csm.Heartbeat(args.Address)
+	isFirst := m.csm.Heartbeat(args.Address)
 	// TODO: Lease Extensions & First HeartBeat: information check
+	if !isFirst {
+		return nil
+	}
+	log.Info("New Chunkserver ", args.Address)
+	_, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
+	if err != nil {
+		return err
+	}
+	for _, handle := range latestHandles {
+		m.csm.AddChunk([]gfs.ServerAddress{args.Address}, handle)
+	}
+
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -6,7 +6,7 @@ a toy implementation of the Google File System(GFS) in golang.
 
 greybox_test.go: 1 master 5 chunkservers 
 
-### To do List
+### To Do List
 
 - [ ] Fault Tolerance
     1. checksum
@@ -14,6 +14,12 @@ greybox_test.go: 1 master 5 chunkservers
     3. WAL log
 
 - [ ] no global time: then how to determine Lease Expiration?
+- [ ] ChunkLease extension
+- [ ] Chunk Version
+- [ ] CheckSum
+- [ ] GC
+- [ ] If chunkserver gets new version number, but dead immediately, then what?
+- [ ] seperate meta-data file to be stored in the fs with additional super-file(block) to describe number of files
 
 
 ### Reference

@@ -1,6 +1,7 @@
 package chunkserver
 
 import (
+	"encoding/gob"
 	"fmt"
 	"io"
 	"net"
@@ -26,9 +27,10 @@ type ChunkServer struct {
 	shutdown   chan struct{}
 	dead       bool // set to true if server is shutdown
 
-	dl                     *downloadBuffer                // expiring download buffer
-	pendingLeaseExtensions *util.ArraySet                 // pending lease extension
-	chunk                  map[gfs.ChunkHandle]*chunkInfo // chunk information
+	// newborn								 	bool														// if chunkserver is new (reboot)
+	dl                     	*downloadBuffer                	// expiring download buffer
+	pendingLeaseExtensions 	*util.ArraySet                 	// pending lease extension
+	chunk                  	map[gfs.ChunkHandle]*chunkInfo 	// chunk information
 }
 
 type Mutation struct {
@@ -41,13 +43,20 @@ type Mutation struct {
 type chunkInfo struct {
 	sync.RWMutex
 	length 				gfs.Offset
-	version       gfs.ChunkVersion               // version number of the chunk in disk
+	version       gfs.ChunkVersion               		// version number of the chunk in memory
 	// newestVersion gfs.ChunkVersion               // allocated newest version number
 	// mutations     map[gfs.ChunkVersion]*Mutation // mutation buffer
 }
 
+type persistChunkInfo struct {
+	Handle 				gfs.ChunkHandle
+	Length 				gfs.Offset
+	Version       gfs.ChunkVersion               // version number of the chunk in disk
+}
+
 const (
-	perm = os.FileMode(0644)
+	metaFile 	= "gfs-server.meta"
+	perm 			= os.FileMode(0644)
 )
 
 // NewAndServe starts a chunkserver and return the pointer to it.
@@ -58,9 +67,10 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 		master:     masterAddr,
 		serverRoot: serverRoot,
 
+		// newborn:    true,	
 		dl:         newDownloadBuffer(gfs.DownloadBufferExpire, gfs.DownloadBufferTick),
 		pendingLeaseExtensions: new(util.ArraySet),
-		chunk: make(map[gfs.ChunkHandle]*chunkInfo),
+		chunk: 			make(map[gfs.ChunkHandle]*chunkInfo),
 	}
 
 	rpcs := rpc.NewServer()
@@ -72,6 +82,10 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 	}
 	cs.l = l
 
+	err := cs.loadMeta()
+	if err != nil {
+		log.Printf("Server %v Load Metadata error: %v", cs.address, err)
+	}
 	// RPC Handler
 	go func() {
 		for {
@@ -95,29 +109,18 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 		}
 	}()
 
-	// Heartbeat
+	heartBeatCh := time.Tick(gfs.HeartbeatInterval)
+	storeMetaCh := time.Tick(gfs.ServerMetaStoreInterval)
 	go func() {
 		for {
 			select {
-			case <-cs.shutdown:
+			case <- cs.shutdown:
 				return
-			default:
+			case <- heartBeatCh:
+				cs.heartBeat()
+			case <- storeMetaCh:
+				cs.storeMeta()
 			}
-			pe := cs.pendingLeaseExtensions.GetAllAndClear()
-			le := make([]gfs.ChunkHandle, len(pe))
-			for i, v := range pe {
-				le[i] = v.(gfs.ChunkHandle)
-			}
-			args := &gfs.HeartbeatArg{
-				Address:         addr,
-				LeaseExtensions: le,
-			}
-			if err := util.Call(cs.master, "Master.RPCHeartbeat", args, nil); err != nil {
-				log.Fatal("heartbeat rpc error ", err)
-				log.Exit(1)
-			}
-
-			time.Sleep(gfs.HeartbeatInterval)
 		}
 	}()
 
@@ -126,14 +129,131 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 	return cs
 }
 
+// heartBeat of chunkserver
+func (cs *ChunkServer) heartBeat() {
+	pe := cs.pendingLeaseExtensions.GetAllAndClear()
+	le := make([]gfs.ChunkHandle, len(pe))
+	for i, v := range pe {
+		le[i] = v.(gfs.ChunkHandle)
+	}
+	args := &gfs.HeartbeatArg{
+		Address:         	cs.address,
+		LeaseExtensions: 	le,
+	}
+
+	if err := util.Call(cs.master, "Master.RPCHeartbeat", args, nil); err != nil {
+		log.Fatal("heartbeat rpc error ", err)
+		log.Exit(1)
+	}
+}
+
 // Shutdown shuts the chunkserver down
 func (cs *ChunkServer) Shutdown() {
 	if !cs.dead {
 		log.Warningf("ChunkServer %v shuts down", cs.address)
 		cs.dead = true
+		err := cs.storeMeta()
+		if err != nil {
+			log.Warn("ChunkServer ", cs.address, " storemeta error: ", err)
+		}
 		close(cs.shutdown)
 		cs.l.Close()
 	}
+}
+
+func (cs *ChunkServer) loadMeta() error {
+	filename := path.Join(cs.serverRoot, metaFile)
+	file, err := os.OpenFile(filename, os.O_RDONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var metas []persistChunkInfo
+	dec := gob.NewDecoder(file)
+	err = dec.Decode(&metas)
+	if err != nil {
+		return err
+	}
+
+	cs.Lock()
+	defer cs.Unlock()
+
+	log.Printf("Server %v: load %v chunks", cs.address, len(metas))
+
+	for _, ckinfo := range metas {
+		cs.chunk[ckinfo.Handle] = &chunkInfo{
+			length: gfs.Offset(ckinfo.Length),
+			version: ckinfo.Version,
+		}
+	}
+	return nil
+}
+
+func (cs *ChunkServer) storeMeta() error {
+	filename := path.Join(cs.serverRoot, metaFile)
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	cs.RLock()
+	defer cs.RUnlock()
+	metas := make([]persistChunkInfo, 0)
+	for handle, ckinfo := range cs.chunk {
+		metas = append(metas, persistChunkInfo{
+			Handle: handle,
+			Length: ckinfo.length,
+			Version: ckinfo.version,
+			// TODO: persist with stale?
+		})
+	}
+
+	log.Printf("Server %v: Store meta of %v chunks", cs.address, len(metas))
+
+	enc := gob.NewEncoder(file)
+	err = enc.Encode(metas)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cs *ChunkServer) RPCReportSelf(args gfs.ReportSelfArg, reply *gfs.ReportSelfReply) error {
+	cs.RLock()
+	defer cs.RUnlock()
+	handles := make([]gfs.ChunkHandle, 0)
+	versions := make([]gfs.ChunkVersion, 0)
+
+	for handle, ckinfo := range cs.chunk {
+		handles = append(handles, handle)
+		versions = append(versions, ckinfo.version)
+	}
+	reply.Handles = handles
+	reply.Versions = versions
+	return nil
+}
+
+func (cs *ChunkServer) RPCGetNewChunkVersion(args gfs.GetNewChunkVerArg, reply *gfs.GetNewChunkVerReply) error {
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.Handle]
+	cs.RUnlock()
+	if !ok {
+		return fmt.Errorf("no such chunk %v while updating chunk version at %v", args.Handle, cs.address)
+	} 
+
+	ckinfo.Lock()
+	defer ckinfo.Unlock()
+	if ckinfo.version + gfs.ChunkVersion(1) == args.Version {
+		ckinfo.version = args.Version
+		reply.IsStale = false
+	} else {
+		reply.IsStale = true
+		log.Printf("Server %v: Stale chunk %v", cs.address, args.Handle)
+	}
+	
+	return nil
 }
 
 // RPCPushDataAndForward is called by client.
@@ -187,8 +307,8 @@ func (cs *ChunkServer) RPCCreateChunk(args gfs.CreateChunkArg, reply *gfs.Create
 	defer cs.Unlock()
 	if _, ok := cs.chunk[args.Handle]; ok {
 		log.Info("ASdfasdfASFDFs ", args.Handle)
-		array := make([]gfs.ChunkHandle, 0, 1)
-		for i, _ := range cs.chunk {
+		array := make([]gfs.ChunkHandle, 0)
+		for i := range cs.chunk {
 			array = append(array, i)
 		}
 		log.Info("cur handles: ", array)
@@ -462,6 +582,7 @@ func (cs *ChunkServer) applyMutation(handle gfs.ChunkHandle, args Mutation) erro
 	}
 
 	if err != nil {
+		log.Info("@#!@#! ", cs.address)
 		return err
 	}
 	return nil

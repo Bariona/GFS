@@ -14,7 +14,7 @@ import (
 // chunkServerManager manages chunkservers
 type chunkServerManager struct {
 	sync.RWMutex
-	servers map[gfs.ServerAddress]*chunkServerInfo
+	servers 		map[gfs.ServerAddress]*chunkServerInfo
 }
 
 // chunkServerInfo marks last Heartbeat & chunks: set of chunks that the chunkserver has
@@ -31,18 +31,19 @@ func newChunkServerManager() *chunkServerManager {
 }
 
 // Hearbeat marks the chunkserver alive for now.
-func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress) {
+func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress) bool {
 	csm.Lock()
 	defer csm.Unlock()
 	server, ok := csm.servers[addr] 
 	if !ok {
-		log.Info("new chunkserver ", addr)
 		csm.servers[addr] = &chunkServerInfo{
 			lastHeartbeat: time.Now(),
 			chunks: make(map[gfs.ChunkHandle]bool),
 		}
+		return true
 	} else {
 		server.lastHeartbeat = time.Now()
+		return false
 	}
 }
 
@@ -83,7 +84,7 @@ func (csm *chunkServerManager) ChooseReReplication(handle gfs.ChunkHandle) (from
 			return
 		}
 	}
-	err = fmt.Errorf("Master: no enough servers for Re-replication, handle ", handle)
+	err = fmt.Errorf("Master: no enough servers for Re-replication, handle %v", handle)
 	return 
 }
 
@@ -137,7 +138,7 @@ func (csm *chunkServerManager) DetectDeadServers() []gfs.ServerAddress {
 	return deadServers
 }
 
-// RemoveServers removes metedata of a disconnected chunkserver.
+// RemoveServers removes metadata of a disconnected chunkserver.
 // It returns the chunks that server holds
 func (csm *chunkServerManager) RemoveServer(addr gfs.ServerAddress) (handles []gfs.ChunkHandle, err error) {
 	csm.Lock()

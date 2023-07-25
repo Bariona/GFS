@@ -100,6 +100,7 @@ type ApplyCopyReply struct {
 type HeartbeatArg struct {
 	Address         ServerAddress // chunkserver address
 	LeaseExtensions []ChunkHandle // leases to be extended
+	// IsFirst					bool 					// whethere it's a first heart beat meassage
 }
 type HeartbeatReply struct{}
 
@@ -173,3 +174,16 @@ type GetChunkNumReply struct {
 	Cnt int
 }
 
+type GetNewChunkVerArg struct {
+	Handle  ChunkHandle
+	Version ChunkVersion
+}
+type GetNewChunkVerReply struct {
+	IsStale	bool
+}
+
+type ReportSelfArg struct {}
+type ReportSelfReply struct {
+	Handles  []ChunkHandle
+	Versions []ChunkVersion
+}
