@@ -170,6 +170,8 @@ COW (copy on write)
 
 
 
+> **Rule of Thumb:** chunkserver 可以随意创建chunk, 即使过程中出现error导致master没有记录它已经创建了chunk, 也可以在后续GC的时候回收
+
 ### Master's Operations
 
 #### HeartBeat

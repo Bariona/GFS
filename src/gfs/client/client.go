@@ -142,7 +142,7 @@ func (c *Client) Write(path gfs.Path, offset gfs.Offset, data []byte) error {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
-			log.Info("wtf? retry write: ERROR ", err)
+			log.Info("wtf? retry write ERROR INFO ", err)
 		}
 		if err != nil {
 			return err

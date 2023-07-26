@@ -35,13 +35,14 @@ type ChunkServer struct {
 
 type Mutation struct {
 	mtype   gfs.MutationType
-	version gfs.ChunkVersion
+	// version gfs.ChunkVersion
 	data    []byte
 	offset  gfs.Offset
 }
 
 type chunkInfo struct {
 	sync.RWMutex
+	stale 				bool
 	length 				gfs.Offset
 	version       gfs.ChunkVersion               		// version number of the chunk in memory
 	// newestVersion gfs.ChunkVersion               // allocated newest version number
@@ -84,7 +85,7 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 
 	err := cs.loadMeta()
 	if err != nil {
-		log.Printf("Server %v Load Metadata error: %v", cs.address, err)
+		log.Warnf("Server %v Load Metadata error: %v", cs.address, err)
 	}
 	// RPC Handler
 	go func() {
@@ -239,7 +240,7 @@ func (cs *ChunkServer) RPCGetNewChunkVersion(args gfs.GetNewChunkVerArg, reply *
 	cs.RLock()
 	ckinfo, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok {
+	if !ok || ckinfo.stale {
 		return fmt.Errorf("no such chunk %v while updating chunk version at %v", args.Handle, cs.address)
 	} 
 
@@ -306,12 +307,11 @@ func (cs *ChunkServer) RPCCreateChunk(args gfs.CreateChunkArg, reply *gfs.Create
 	cs.Lock()
 	defer cs.Unlock()
 	if _, ok := cs.chunk[args.Handle]; ok {
-		log.Info("ASdfasdfASFDFs ", args.Handle)
-		array := make([]gfs.ChunkHandle, 0)
-		for i := range cs.chunk {
-			array = append(array, i)
-		}
-		log.Info("cur handles: ", array)
+		// array := make([]gfs.ChunkHandle, 0)
+		// for i := range cs.chunk {
+		// 	array = append(array, i)
+		// }
+		// log.Info("cur handles: ", array)
 		return fmt.Errorf("chunk %v has exist on server %v", args.Handle, cs.address)
 	}
 	cs.chunk[args.Handle] = &chunkInfo{
@@ -327,7 +327,7 @@ func (cs *ChunkServer) RPCReadChunk(args gfs.ReadChunkArg, reply *gfs.ReadChunkR
 	cs.RLock()
 	ckinfo, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok {
+	if !ok || ckinfo.stale {
 		return fmt.Errorf("no such chunk %v while ReadChunk at %v", args.Handle, cs.address)
 	} 
 
@@ -352,7 +352,14 @@ func (cs *ChunkServer) RPCReadChunk(args gfs.ReadChunkArg, reply *gfs.ReadChunkR
 // RPCWriteChunk is called by client
 // applies chunk write to itself (primary) and asks secondaries to do the same.
 func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChunkReply) error {
-	// TODO: version number
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.DataID.Handle]
+	cs.RUnlock()
+
+	if !ok || ckinfo.stale {
+		return fmt.Errorf("server: no such chunk %v while WriteChunk at %v", args.DataID.Handle, cs.address)
+	} 
+
 	var mutArg = gfs.ApplyMutationArg{
 		Mtype: gfs.MutationWrite,
 		// Version: ,
@@ -383,19 +390,19 @@ func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChu
 // If the chunk size after appending the data will excceed the limit,
 // pad current chunk and ask the client to retry on the next chunk.
 func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.AppendChunkReply) error {
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.DataID.Handle]
+	cs.RUnlock()
+
+	if !ok || ckinfo.stale {
+		return fmt.Errorf("server: no such chunk %v while AppendChunk at %v", args.DataID.Handle, cs.address)
+	} 
+
 	data, ok := cs.dl.Get(args.DataID)
 	if !ok {
 		return fmt.Errorf("server: %v doesn't have data of ID %v" , cs.address, args.DataID)
 	}
 	cs.dl.Delete(args.DataID)
-
-	cs.RLock()
-	ckinfo, ok := cs.chunk[args.DataID.Handle]
-	cs.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
-	} 
 
 	ckinfo.Lock()
 	defer ckinfo.Unlock()
@@ -418,7 +425,7 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 	wait := make(chan error, 1)
 	go func() {
 		// do not call RPCApplyMutation to avoid re-lock ckinfo -> dead lock
-		wait <- cs.applyMutation(args.DataID.Handle, Mutation{mtype,	ckinfo.version,	data,	reply.Offset})
+		wait <- cs.applyMutation(args.DataID.Handle, Mutation{mtype,	data,	reply.Offset})
 	}()
 	
 	err := util.CallAll(args.Secondaries, "ChunkServer.RPCApplyMutation", gfs.ApplyMutationArg{mtype,	ckinfo.version,	args.DataID, reply.Offset})
@@ -435,18 +442,18 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 
 // RPCApplyWriteChunk is called by primary to apply mutations
 func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.ApplyMutationReply) error {
+	cs.RLock()
+	ckinfo, ok := cs.chunk[args.DataID.Handle]
+	cs.RUnlock()
+	if !ok || ckinfo.stale {
+		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
+	} 
+
 	data, ok := cs.dl.Get(args.DataID)
 	if !ok {
 		return fmt.Errorf("server: %v doesn't have data of ID %v" , cs.address, args.DataID)
 	}
 	cs.dl.Delete(args.DataID)
-
-	cs.RLock()
-	ckinfo, ok := cs.chunk[args.DataID.Handle]
-	cs.RUnlock()
-	if !ok {
-		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
-	} 
 
 	ckinfo.Lock()	
 	defer ckinfo.Unlock()
@@ -455,7 +462,7 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 		args.DataID.Handle,
 		Mutation{
 			mtype: args.Mtype,
-			version: ckinfo.version,
+			// version: ckinfo.version,
 			data: data,
 			offset: args.Offset,
 		},
@@ -473,7 +480,7 @@ func (cs *ChunkServer) RPCSendCopy(args gfs.SendCopyArg, reply *gfs.SendCopyRepl
 	cs.RLock()
 	ckinfo, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok {
+	if !ok || ckinfo.stale {
 		return fmt.Errorf("no such chunk %v while RPCSendCopy at %v", args.Handle, cs.address)
 	}
 
@@ -506,7 +513,7 @@ func (cs *ChunkServer) RPCApplyCopy(args gfs.ApplyCopyArg, reply *gfs.ApplyCopyR
 	cs.RLock()
 	ckinfo, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok {
+	if !ok || ckinfo.stale {
 		return fmt.Errorf("no such chunk %v while RPCApplyCopy at %v", args.Handle, cs.address)
 	}
 
@@ -582,7 +589,11 @@ func (cs *ChunkServer) applyMutation(handle gfs.ChunkHandle, args Mutation) erro
 	}
 
 	if err != nil {
-		log.Info("@#!@#! ", cs.address)
+		log.Printf("chunk %v become stale at %v due to %v", handle, cs.address, err)
+		cs.RLock()
+		ckinfo := cs.chunk[handle]
+		cs.RUnlock()
+		ckinfo.stale = true
 		return err
 	}
 	return nil

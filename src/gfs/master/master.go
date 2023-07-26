@@ -134,6 +134,7 @@ func (m *Master) BackgroundActivity() error {
 
 	handles := m.cm.GetRereplicas()
 	for _, handle := range handles {
+		// TODO: lease expire??
 		err := m.reReplication(handle)
 		if err != nil {
 			log.Warn("Re-replication: ", err)
@@ -196,10 +197,12 @@ func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) 
 // RPCGetLease returns lease holder and secondaries of a chunk.
 // If no one holds the lease currently, grant one.
 func (m *Master) RPCGetLease(args gfs.GetLeaseArg, reply *gfs.GetLeaseReply) error {
-	lease, err := m.cm.GetLeaseHolder(args.Handle)
+	stales, lease, err := m.cm.GetLeaseHolder(args.Handle)
 	if err != nil {
 		return err
 	}
+	m.csm.RemoveChunk(stales, args.Handle)
+
 	reply.Expire = lease.Expire
 	reply.Primary = lease.Primary
 	reply.Secondaries = lease.Secondaries
@@ -303,15 +306,23 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 		return err
 	}
 
-	m.csm.AddChunk(servers, reply.Handle)
-
+	available := make([]gfs.ServerAddress, 0)
+	errList := ""
 	for _, server := range servers {
 		err := util.Call(server, "ChunkServer.RPCCreateChunk", gfs.CreateChunkArg{Handle: reply.Handle}, &gfs.CreateChunkReply{})
 		if err != nil {
-			return err
+			errList += err.Error()
+		} else {
+			available = append(available, server)
 		}
 	}
-	return err
+	m.csm.AddChunk(available, reply.Handle)
+
+	if errList == "" {
+		return nil
+	} else {
+		return fmt.Errorf(errList)
+	}
 }
 
 // RPCList returns all files and directories under args.Path directory

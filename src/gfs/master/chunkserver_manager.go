@@ -63,6 +63,22 @@ func (csm *chunkServerManager) AddChunk(addrs []gfs.ServerAddress, handle gfs.Ch
 	}
 }
 
+// RemoveChunk creates a chunk on given chunkservers
+func (csm *chunkServerManager) RemoveChunk(addrs []gfs.ServerAddress, handle gfs.ChunkHandle) {
+	csm.Lock()
+	defer csm.Unlock()
+	for _, addr := range addrs {
+		server, ok := csm.servers[addr]
+		if !ok {
+			log.Warning("Master: no such server", addr)
+		}
+		if exist, ok := server.chunks[handle]; !ok || !exist {
+			log.Warning("Master: server ", addr, " doesn't have chunk ", handle)
+		}
+		server.chunks[handle] = false
+	}
+}
+
 // ChooseReReplication chooses servers to perform re-replication
 // called when the replicas number of a chunk is less than gfs.MinimumNumReplicas
 // returns two server address, the master will call 'from' to send a copy to 'to'

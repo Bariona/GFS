@@ -147,13 +147,13 @@ func (cm *chunkManager) GetChunk(path gfs.Path, index gfs.ChunkIndex) (gfs.Chunk
 // GetLeaseHolder returns the chunkserver that holds the lease of a chunk
 // (i.e. primary) and expire time of the lease. If no one has a lease,
 // grant one to a replica it chooses.
-func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, error) {
+func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddress, *gfs.Lease, error) {
 	cm.RLock()
 	ckinfo, ok := cm.chunk[handle]
 	cm.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no such ChunkHandle %v", handle)
+		return nil, nil, fmt.Errorf("no such ChunkHandle %v", handle)
 	}
 
 	ckinfo.Lock()
@@ -161,6 +161,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 
 	var prim gfs.ServerAddress
 	var expireTime time.Time
+	staleServers := make([]gfs.ServerAddress, 0)
 
 	if len(ckinfo.location) < gfs.MinimumNumReplicas {
 		cm.Lock()
@@ -168,7 +169,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 		cm.Unlock()
 		
 		if len(ckinfo.location) == 0 {
-			return nil, fmt.Errorf("Master: During lease granting, chunk %v doesn't exist in any replica", handle)
+			return nil, nil, fmt.Errorf("Master: During lease granting, chunk %v doesn't exist in any replica", handle)
 		}
 	}
 	
@@ -176,27 +177,51 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 
 	if time.Now().After(ckinfo.expire) {
 		// grant a new lease
-		index := rand.Intn(len(ckinfo.location))
-		prim = ckinfo.location[index]
-		expireTime = time.Now().Add(gfs.LeaseExpire)
 		ckinfo.version += 1
+	
+		var wg sync.WaitGroup
+		wg.Add(len(ckinfo.location))
 
+		var lock sync.Mutex
+		latest := make([]gfs.ServerAddress, 0)
 		for _, addr := range ckinfo.location {
-			var r gfs.GetNewChunkVerReply
-			err := util.Call(
-				addr, 
-				"ChunkServer.RPCGetNewChunkVersion", 
-				gfs.GetNewChunkVerArg{Handle: handle, Version: ckinfo.version}, 
-				&r,
-			)
-			if err != nil {
-				log.Warn("Server ", addr, " error occur at updating chunkversion", err)
-			}
-			if r.IsStale {
-				// TODO: stale 
+			go func(addr gfs.ServerAddress) {
+				var r gfs.GetNewChunkVerReply
+				err := util.Call(
+					addr, 
+					"ChunkServer.RPCGetNewChunkVersion", 
+					gfs.GetNewChunkVerArg{Handle: handle, Version: ckinfo.version}, 
+					&r,
+				)
+				
+				if err == nil && !r.IsStale {
+					lock.Lock()
+					latest = append(latest, addr)
+					lock.Unlock()
+				} else {
+					log.Warnf("Stale Chunk %v at server %v error %v", handle, addr, err)
+					staleServers = append(staleServers, addr)
+				}
+				wg.Done()
+			}(addr)
+		}
+		wg.Wait()
+
+		ckinfo.location = latest
+		if len(latest) < gfs.MinimumNumReplicas {
+			cm.Lock()
+			cm.reReplicas = append(cm.reReplicas, handle)
+			cm.Unlock()
+			if len(latest) == 0 {
+				log.Fatal("no latest version of chunk ", handle)
 			}
 		}
 
+		index := rand.Intn(len(ckinfo.location))
+		prim = ckinfo.location[index]
+		expireTime = time.Now().Add(gfs.LeaseExpire)
+
+		log.Printf("Chunk %v: Granting new lease %v, %v", handle, prim, latest)
 	} else {
 		prim = ckinfo.primary
 		expireTime = ckinfo.expire
@@ -213,7 +238,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) (*gfs.Lease, erro
 		Expire: expireTime,
 		Secondaries: secondaries,
 	}
-	return l, nil
+	return staleServers, l, nil
 }
 
 // ExtendLease extends the lease of chunk if the lease holder is primary.
@@ -269,13 +294,19 @@ func (cm *chunkManager) GetRereplicas() []gfs.ChunkHandle {
 	cm.Lock()
 	defer cm.Unlock()
 
+	// remove elements
+	list := make([]gfs.ChunkHandle, 0)
+	for _, handle := range cm.reReplicas {
+		if len(cm.chunk[handle].location) < gfs.MinimumNumReplicas {
+			list = append(list, handle)
+		}
+	}
+	cm.reReplicas = list
+
 	// TODO: sort by priority
 	vec := make([]int, 0)
 	for _, handle := range cm.reReplicas {
-		if len(cm.chunk[handle].location) >= gfs.MinimumNumReplicas {
-			log.Fatal("handle ", handle, " don't need to re-replica", handle)
-			log.Exit(1)
-		}
+		
 		vec = append(vec, int(handle))
 	}
 	sort.Ints(vec)
@@ -287,6 +318,6 @@ func (cm *chunkManager) GetRereplicas() []gfs.ChunkHandle {
 		}
 		unique = append(unique, gfs.ChunkHandle(vec[i]))
 	}
-	cm.reReplicas = make([]gfs.ChunkHandle, 0)
+
 	return unique
 }
