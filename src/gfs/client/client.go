@@ -266,6 +266,7 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 			Data: data,
 			ForwardTo: location,
 		},
+		// TODO: use master's time Stamp
 		&r,
 	)
 	if err != nil {
@@ -332,11 +333,10 @@ func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Of
 	)
 
 	if err != nil {
-		return reply.Offset, gfs.Error{gfs.UnknownError, err.Error()}
+		return reply.Offset, gfs.Error{Code: gfs.UnknownError, Err: err.Error()}
 	}
 	if reply.ErrorCode == gfs.AppendExceedChunkSize {
-		return reply.Offset, gfs.Error{reply.ErrorCode, "padding"}
+		return reply.Offset, gfs.Error{Code: reply.ErrorCode, Err: "padding"}
 	}
 	return reply.Offset, nil
 }
- 

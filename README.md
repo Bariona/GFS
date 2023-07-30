@@ -6,20 +6,22 @@ a toy implementation of the Google File System(GFS) in golang.
 
 greybox_test.go: 1 master 5 chunkservers 
 
-### To Do List
+### To-Do List
 
 - [ ] Fault Tolerance
     1. checksum
     2. stale replica detect
     3. WAL log
 
-- [ ] no global time: then how to determine Lease Expiration?
-- [ ] ChunkLease extension
-- [ ] Chunk Version
+- [x] no global time: then how to determine Lease Expiration?
+
+    Timestamp is only given by master, so it's ok.
+
+- [x] ChunkLease extension
 - [ ] CheckSum
 - [ ] GC
-- [ ] If chunkserver gets new version number, but dead immediately, then what?
-- [ ] seperate meta-data file to be stored in the fs with additional super-file(block) to describe number of files
+- [ ] If chunkserver gets a new version number, but dead immediately, then what (stale content)?
+- [ ] separate meta-data file to be stored in the fs with an additional super-file(block) to describe the number of files
 
 
 ### Reference

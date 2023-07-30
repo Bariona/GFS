@@ -143,8 +143,8 @@ func (cs *ChunkServer) heartBeat() {
 	}
 
 	if err := util.Call(cs.master, "Master.RPCHeartbeat", args, nil); err != nil {
-		log.Fatal("heartbeat rpc error ", err)
-		log.Exit(1)
+		log.Warn("heartbeat rpc error ", err)
+		// log.Exit(1)
 	}
 }
 
@@ -349,20 +349,22 @@ func (cs *ChunkServer) RPCReadChunk(args gfs.ReadChunkArg, reply *gfs.ReadChunkR
 	return nil 
 }
 
-// RPCWriteChunk is called by client
-// applies chunk write to itself (primary) and asks secondaries to do the same.
+// RPCWriteChunk is called by client to call the primary to 
+// apply chunk write to itself and asks secondaries to do the same.
 func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChunkReply) error {
-	cs.RLock()
-	ckinfo, ok := cs.chunk[args.DataID.Handle]
-	cs.RUnlock()
+	handle := args.DataID.Handle
+	
+	cs.Lock()
+	cs.pendingLeaseExtensions.Add(handle)
+	ckinfo, ok := cs.chunk[handle]
+	cs.Unlock()
 
 	if !ok || ckinfo.stale {
-		return fmt.Errorf("server: no such chunk %v while WriteChunk at %v", args.DataID.Handle, cs.address)
+		return fmt.Errorf("server: no such chunk %v while WriteChunk at %v", handle, cs.address)
 	} 
 
 	var mutArg = gfs.ApplyMutationArg{
 		Mtype: gfs.MutationWrite,
-		// Version: ,
 		DataID: args.DataID,
 		Offset: args.Offset, 
 	}
@@ -385,17 +387,20 @@ func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChu
 	return nil
 }
 
-// RPCAppendChunk is called by client to apply atomic record append.
+// RPCAppendChunk is called by client to call primary to apply atomic record append.
 // The length of data should be within max append size.
 // If the chunk size after appending the data will excceed the limit,
 // pad current chunk and ask the client to retry on the next chunk.
 func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.AppendChunkReply) error {
-	cs.RLock()
-	ckinfo, ok := cs.chunk[args.DataID.Handle]
-	cs.RUnlock()
+	handle := args.DataID.Handle
+
+	cs.Lock()
+	cs.pendingLeaseExtensions.Add(handle)
+	ckinfo, ok := cs.chunk[handle]
+	cs.Unlock()
 
 	if !ok || ckinfo.stale {
-		return fmt.Errorf("server: no such chunk %v while AppendChunk at %v", args.DataID.Handle, cs.address)
+		return fmt.Errorf("server: no such chunk %v while AppendChunk at %v", handle, cs.address)
 	} 
 
 	data, ok := cs.dl.Get(args.DataID)
@@ -425,10 +430,10 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 	wait := make(chan error, 1)
 	go func() {
 		// do not call RPCApplyMutation to avoid re-lock ckinfo -> dead lock
-		wait <- cs.applyMutation(args.DataID.Handle, Mutation{mtype,	data,	reply.Offset})
+		wait <- cs.applyMutation(handle, Mutation{mtype,	data,	reply.Offset})
 	}()
 	
-	err := util.CallAll(args.Secondaries, "ChunkServer.RPCApplyMutation", gfs.ApplyMutationArg{mtype,	ckinfo.version,	args.DataID, reply.Offset})
+	err := util.CallAll(args.Secondaries, "ChunkServer.RPCApplyMutation", gfs.ApplyMutationArg{mtype,	args.DataID, reply.Offset})
 	if err != nil {
 		return err
 	}
@@ -462,7 +467,6 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 		args.DataID.Handle,
 		Mutation{
 			mtype: args.Mtype,
-			// version: ckinfo.version,
 			data: data,
 			offset: args.Offset,
 		},

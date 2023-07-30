@@ -30,7 +30,7 @@ func newChunkServerManager() *chunkServerManager {
 	return csm
 }
 
-// Hearbeat marks the chunkserver alive for now.
+// Hearrbeat marks the chunkserver alive for now.
 func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress) bool {
 	csm.Lock()
 	defer csm.Unlock()

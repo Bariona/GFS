@@ -52,7 +52,6 @@ type AppendChunkReply struct {
 
 type ApplyMutationArg struct {
 	Mtype   MutationType
-	Version ChunkVersion
 	DataID  DataBufferID
 	Offset  Offset
 }

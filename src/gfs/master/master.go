@@ -14,10 +14,11 @@ import (
 
 // Master Server struct
 type Master struct {
-	address    gfs.ServerAddress // master server address
-	serverRoot string            // path to metadata storage
-	l          net.Listener
-	shutdown   chan struct{}
+	address    	gfs.ServerAddress // master server address
+	serverRoot 	string            // path to metadata storage
+	l          	net.Listener
+	shutdown   	chan struct{}
+	dead 			 	bool
 
 	nm  *namespaceManager
 	cm  *chunkManager
@@ -45,6 +46,8 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 	}
 	m.l = l
 
+	log.Info("New Master!")
+
 	// RPC Handler
 	go func() {
 		for {
@@ -60,8 +63,10 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 					conn.Close()
 				}()
 			} else {
-				log.Fatal("accept error:", err)
-				log.Exit(1)
+				if !m.dead {
+					log.Fatal("accept error:", err)
+					log.Exit(1)
+				}
 			}
 		}
 	}()
@@ -91,7 +96,12 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 
 // Shutdown shuts down master
 func (m *Master) Shutdown() {
-	close(m.shutdown)
+	if !m.dead {
+		log.Warn("Master shuts down")
+		m.dead = true
+		close(m.shutdown)
+		m.l.Close()
+	}
 }
 
 // BackgroundActivity does all the background activities:
@@ -175,10 +185,16 @@ func (m *Master) reReplication(handle gfs.ChunkHandle) error {
 // Lease extension request is included.
 func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) error {
 	isFirst := m.csm.Heartbeat(args.Address)
-	// TODO: Lease Extensions & First HeartBeat: information check
+
+	// Lease Extension
+	for _, handle := range args.LeaseExtensions {
+		m.cm.ExtendLease(handle, args.Address)
+	}
+
 	if !isFirst {
 		return nil
 	}
+	// First Heart Beat
 	log.Info("New Chunkserver ", args.Address)
 	_, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
 	if err != nil {
