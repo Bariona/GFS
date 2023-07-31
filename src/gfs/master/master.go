@@ -1,10 +1,13 @@
 package master
 
 import (
+	"encoding/gob"
 	"fmt"
 	"gfs/util"
 	"net"
 	"net/rpc"
+	"os"
+	"path"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -24,6 +27,13 @@ type Master struct {
 	cm  *chunkManager
 	csm *chunkServerManager
 }
+
+const (
+	metaNMFile 	= "gfs-master.metaNM"
+	metaCMFile 	= "gfs-master.metaCM"
+	perm 			= os.FileMode(0644)
+)
+
 
 // NewAndServe starts a master and returns the pointer to it.
 func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
@@ -46,7 +56,12 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 	}
 	m.l = l
 
+	// TODO: query servers
 	log.Info("New Master!")
+	err := m.loadMeta()
+	if err != nil {
+		log.Warn("Master Load Metadata error: ", err)
+	}
 
 	// RPC Handler
 	go func() {
@@ -73,19 +88,23 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 
 	// Background Task
 	go func() {
-		ticker := time.Tick(gfs.BackgroundInterval)
+		heartBeatCh := time.Tick(gfs.BackgroundInterval)
+		storeMetaCh := time.Tick(gfs.MasterMetaStoreInterval)
 		for {
 			select {
-			case <-m.shutdown:
+			case <- m.shutdown:
 				return
-			default:
-			}
-			<-ticker
-
-			err := m.BackgroundActivity()
-			if err != nil {
-				log.Fatal("Background error ", err)
-			}
+			case <- storeMetaCh: 
+				err := m.storeMeta()
+				if err != nil {
+					log.Warn("Master storeMeta error: ", err)
+				}
+			case <- heartBeatCh:
+				err := m.BackgroundActivity()
+				if err != nil {
+					log.Fatal("Background error ", err)
+				}
+			}	
 		}
 	}()
 
@@ -98,10 +117,85 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 func (m *Master) Shutdown() {
 	if !m.dead {
 		log.Warn("Master shuts down")
+		err := m.storeMeta()
+		if err != nil {
+			log.Warn("Master storemeta error: ", err)
+		}
 		m.dead = true
 		close(m.shutdown)
 		m.l.Close()
 	}
+}
+
+func (m *Master) loadMeta() error {
+	// meta of namespace manager
+	filename := path.Join(m.serverRoot, metaNMFile)
+	file, err := os.OpenFile(filename, os.O_RDONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var nmTreeMeta []persistNsTree
+	dec := gob.NewDecoder(file)
+	err = dec.Decode(&nmTreeMeta)
+	if err != nil {
+		return err
+	}
+	m.nm.decodeNsTree(nmTreeMeta)
+
+	// meta of chunk manager
+	filename = path.Join(m.serverRoot, metaCMFile)
+	file, err = os.OpenFile(filename, os.O_RDONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var cmMeta persistCM
+	dec = gob.NewDecoder(file)
+	err = dec.Decode(&cmMeta)
+	if err != nil {
+		return err
+	}
+	m.cm.decodeCM(cmMeta)
+
+	return nil
+}
+
+func (m *Master) storeMeta() error {
+	// meta of namespace manager
+	filename := path.Join(m.serverRoot, metaNMFile)
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	nsTreeMeta := m.nm.encodeNsTree()
+
+	enc := gob.NewEncoder(file)
+	err = enc.Encode(nsTreeMeta)
+	if err != nil {
+		return err
+	}
+
+	// meta of chunk manager
+	filename = path.Join(m.serverRoot, metaCMFile)
+	file, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	cmMeta := m.cm.encodeCM()
+
+	enc = gob.NewEncoder(file)
+	err = enc.Encode(cmMeta)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // BackgroundActivity does all the background activities:
@@ -312,6 +406,7 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 
 	// === add chunk ===
 	file.chunks += 1
+	file.length += gfs.MaxChunkSize
 	servers, err := m.csm.ChooseServers(gfs.DefaultNumReplicas)
 	if err != nil {
 		return err

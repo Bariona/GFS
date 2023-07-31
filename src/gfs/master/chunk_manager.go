@@ -17,7 +17,6 @@ import (
 type chunkManager struct {
 	sync.RWMutex
 
-
 	reReplicas 	[]gfs.ChunkHandle
 	chunk map[gfs.ChunkHandle]*chunkInfo
 	file  map[gfs.Path]*fileInfo
@@ -31,13 +30,19 @@ type chunkInfo struct {
 	version  gfs.ChunkVersion
 	primary  gfs.ServerAddress 	// primary chunkserver
 	expire   time.Time         	// lease expire time
-	path     gfs.Path
+	// path     gfs.Path
 }
 
 type fileInfo struct {
 	handles []gfs.ChunkHandle
 }
 
+type persistCM struct {
+	NumChunkHandle gfs.ChunkHandle
+	Handles 	[]gfs.ChunkHandle
+	Versions 	[]gfs.ChunkVersion
+	File  		map[gfs.Path][]gfs.ChunkHandle
+}
 
 func newChunkManager() *chunkManager {
 	cm := &chunkManager{
@@ -48,7 +53,46 @@ func newChunkManager() *chunkManager {
 	return cm
 }
 
+func (cm *chunkManager) encodeCM() persistCM {
+	cm.RLock()
+	defer cm.RUnlock()
+	r := persistCM {
+		Handles: make([]gfs.ChunkHandle, 0),
+		Versions: make([]gfs.ChunkVersion, 0),
+		File: make(map[gfs.Path][]gfs.ChunkHandle),
+		NumChunkHandle: cm.numChunkHandle,
+	}
+	for k, v := range cm.file {
+		r.File[k] = v.handles
+	}
+	for handle, info := range cm.chunk {
+		r.Handles = append(r.Handles, handle)
+		r.Versions = append(r.Versions, info.version)
+	}
+	return r
+}
+
+func (cm *chunkManager) decodeCM(meta persistCM) {
+	cm.Lock()
+	defer cm.Unlock()
+	for k, v := range meta.File {
+		cm.file[k] = &fileInfo{
+			handles: v,
+		}
+	}
+	cm.numChunkHandle = meta.NumChunkHandle
+	for i := range meta.Handles {
+		cm.chunk[meta.Handles[i]] = &chunkInfo{
+			location: make([]gfs.ServerAddress, 0),
+			version: meta.Versions[i],
+			expire: time.Now(),
+			// path: ,
+		}
+	}
+}
+
 // StaleChunkDetect is called by master to check stale chunks of a reboot chunkserver cs
+// if the chunk is up-to-date, then add it into location
 func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandle, []gfs.ChunkHandle, error) {
 	var r gfs.ReportSelfReply
 	err := util.Call(cs, "ChunkServer.RPCReportSelf", gfs.ReportSelfArg{}, &r)
@@ -63,7 +107,10 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 	latestHandles := make([]gfs.ChunkHandle, 0)
 
 	for i, handle := range r.Handles {
-		ckinfo := cm.chunk[handle]
+		ckinfo, ok := cm.chunk[handle]
+		if !ok {
+			log.Warnf("Master: no such handle %v during stale detection", handle)
+		}
 		if ckinfo.version == r.Versions[i] {
 			log.Printf("Master: Detect latest Chunk %v Version %v at server %v", handle, r.Versions[i], cs)
 			ckinfo.location = append(ckinfo.location, cs)
@@ -272,7 +319,7 @@ func (cm *chunkManager) CreateChunk(path gfs.Path, addrs []gfs.ServerAddress) (g
 	handle := cm.numChunkHandle
 	
 	cm.chunk[handle] = &chunkInfo{
-		path: path,
+		// path: path,
 		location: addrs,
 		version: gfs.ChunkVersion(1),
 		expire: time.Now(),

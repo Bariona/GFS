@@ -16,12 +16,22 @@ type nsTree struct {
 	sync.RWMutex
 
 	// if it is a directory
-	isDir    bool
-	children map[string]*nsTree
+	isDir    	bool
+	children	map[string]*nsTree
 
 	// if it is a file
-	length int64
-	chunks int64
+	length 	int64
+	chunks 	int64
+}
+
+type persistNsTree struct {
+	Id 			int
+	Fid 		int 
+
+	Name 		string 
+	IsDir		bool
+	Length	int64
+	Chunks 	int64 
 }
 
 func newNamespaceManager() *namespaceManager {
@@ -32,6 +42,58 @@ func newNamespaceManager() *namespaceManager {
 		},
 	}
 	return nm
+}
+
+func dfs(u *nsTree, name string, fid int, id *int, array *[]persistNsTree) {
+	*id += 1
+	curId := *id
+	*array = append(*array, persistNsTree{
+		Id: curId,
+		Fid: fid, 
+
+		Name: name,
+		IsDir: u.isDir,
+		Length: u.length,
+		Chunks: u.chunks,
+	})
+	for name, ch := range u.children {
+		// log.Printf("father: %v, son %v", fid, curId)
+		dfs(ch, name, curId, id, array)
+	}
+}
+
+func (nm *namespaceManager) encodeNsTree() []persistNsTree {
+	id := 0
+	array := make([]persistNsTree, 0)
+	nm.root.Lock() // can lock nsTree while Rlock() can't
+	dfs(nm.root, "nm-root", 0, &id, &array)
+	nm.root.Unlock()
+	return array
+}
+
+func (nm *namespaceManager) decodeNsTree(metas []persistNsTree) {
+	nm.root.Lock()
+	defer nm.root.Unlock()
+
+	mp := make(map[int]*nsTree)
+	for _, node := range metas {
+		var nst *nsTree
+		if node.Fid == 0 {
+			nst = nm.root
+		} else {
+			nst = &nsTree {
+				isDir: node.IsDir,
+				children: make(map[string]*nsTree),
+				length: node.Length,
+				chunks: node.Chunks,
+			}
+		}
+		mp[node.Id] = nst
+		if f, ok := mp[node.Fid]; ok {
+			log.Printf("fathe %v, son %v", node.Fid, node.Id)
+			f.children[node.Name] = nst
+		}
+	}
 }
 
 // acquire read lock along the parents (e.g. /d1/d2/.../dn/leaf):

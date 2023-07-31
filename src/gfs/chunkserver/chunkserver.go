@@ -120,7 +120,10 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 			case <- heartBeatCh:
 				cs.heartBeat()
 			case <- storeMetaCh:
-				cs.storeMeta()
+				err := cs.storeMeta()
+				if err != nil {
+					log.Warnf("ChunkServer %v storeMeta error: %v", cs.address, err)
+				}
 			}
 		}
 	}()
