@@ -71,6 +71,8 @@ const (
 	BackgroundInterval = 200 * time.Millisecond 
 	ServerTimeout      = 1 * time.Second        
 	ServerMetaStoreInterval = 20 * time.Hour
+	ServerGCInterval				= 100 * time.Millisecond
+	// ServerGCInterval				= 15 * time.Hour
 	MasterMetaStoreInterval = 10 * time.Hour
 
 	MaxChunkSize  = 512 << 10 // 512KB DEBUG ONLY 64 << 20

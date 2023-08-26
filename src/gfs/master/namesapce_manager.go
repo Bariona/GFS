@@ -90,7 +90,7 @@ func (nm *namespaceManager) decodeNsTree(metas []persistNsTree) {
 		}
 		mp[node.Id] = nst
 		if f, ok := mp[node.Fid]; ok {
-			log.Printf("fathe %v, son %v", node.Fid, node.Id)
+			// log.Printf("father %v, son %v", node.Fid, node.Id)
 			f.children[node.Name] = nst
 		}
 	}

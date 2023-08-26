@@ -287,7 +287,7 @@ func (m *Master) reReplication(handle gfs.ChunkHandle) error {
 // RPCHeartbeat is called by chunkserver to let the master know that a chunkserver is alive.
 // Lease extension request is included.
 func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) error {
-	isFirst := m.csm.Heartbeat(args.Address)
+	isFirst := m.csm.Heartbeat(args.Address, reply)
 
 	// Lease Extension
 	for _, handle := range args.LeaseExtensions {
@@ -296,16 +296,14 @@ func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) 
 
 	if isFirst { // First Heart Beat
 		log.Info("New Chunkserver ", args.Address)
-		_, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
+		staleHandles, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
+		reply.Garbage = staleHandles
 		if err != nil {
 			return err
-		}
-		for _, handle := range latestHandles {
-			m.csm.AddChunk([]gfs.ServerAddress{args.Address}, handle)
 		}
 
-		if err != nil {
-			return err
+		for _, handle := range latestHandles {
+			m.csm.AddChunk([]gfs.ServerAddress{args.Address}, handle)
 		}
 	}
 
@@ -320,6 +318,12 @@ func (m *Master) RPCGetLease(args gfs.GetLeaseArg, reply *gfs.GetLeaseReply) err
 		return err
 	}
 	m.csm.RemoveChunk(stales, args.Handle)
+	for _, staleServer := range stales {
+		err := m.csm.AddGarbage(staleServer, args.Handle)
+		if err != nil {
+			return err
+		}
+	}
 
 	reply.Expire = lease.Expire
 	reply.Primary = lease.Primary

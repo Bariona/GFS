@@ -101,7 +101,9 @@ type HeartbeatArg struct {
 	LeaseExtensions []ChunkHandle // leases to be extended
 	// IsFirst					bool 					// whethere it's a first heart beat meassage
 }
-type HeartbeatReply struct{}
+type HeartbeatReply struct{
+	Garbage 				[]ChunkHandle
+}
 
 type GetLeaseArg struct {
 	Handle ChunkHandle

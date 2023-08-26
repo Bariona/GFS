@@ -21,6 +21,7 @@ type chunkServerManager struct {
 type chunkServerInfo struct {
 	lastHeartbeat time.Time
 	chunks        map[gfs.ChunkHandle]bool // set of chunks that the chunkserver has
+	garbage				[]gfs.ChunkHandle
 }
 
 func newChunkServerManager() *chunkServerManager {
@@ -31,7 +32,7 @@ func newChunkServerManager() *chunkServerManager {
 }
 
 // Hearrbeat marks the chunkserver alive for now.
-func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress) bool {
+func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress, reply *gfs.HeartbeatReply) bool {
 	csm.Lock()
 	defer csm.Unlock()
 	server, ok := csm.servers[addr] 
@@ -39,10 +40,13 @@ func (csm *chunkServerManager) Heartbeat(addr gfs.ServerAddress) bool {
 		csm.servers[addr] = &chunkServerInfo{
 			lastHeartbeat: time.Now(),
 			chunks: make(map[gfs.ChunkHandle]bool),
+			garbage: make([]gfs.ChunkHandle, 0),
 		}
 		return true
 	} else {
 		server.lastHeartbeat = time.Now()
+		reply.Garbage = server.garbage
+		server.garbage = make([]gfs.ChunkHandle, 0)
 		return false
 	}
 }
@@ -176,4 +180,18 @@ func (csm *chunkServerManager) RemoveServer(addr gfs.ServerAddress) (handles []g
 
 	delete(csm.servers, addr)
 	return handles, nil
+}
+
+// AddGarbage adds stale chunks to the server
+func (csm *chunkServerManager) AddGarbage(addr gfs.ServerAddress, handle gfs.ChunkHandle) error {
+	csm.Lock()
+	defer csm.Unlock()
+
+	server, ok := csm.servers[addr]
+	if !ok {
+		return fmt.Errorf("Master: server %v doesn't exist", addr)
+	}	
+
+	server.garbage = append(server.garbage, handle)
+	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"path"
+	"sort"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type ChunkServer struct {
 	dead       bool // set to true if server is shutdown
 
 	// newborn								 	bool														// if chunkserver is new (reboot)
+	gc											[]gfs.ChunkHandle								// garbage chunkhandles
 	dl                     	*downloadBuffer                	// expiring download buffer
 	pendingLeaseExtensions 	*util.ArraySet                 	// pending lease extension
 	chunk                  	map[gfs.ChunkHandle]*chunkInfo 	// chunk information
@@ -112,6 +114,7 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 
 	heartBeatCh := time.Tick(gfs.HeartbeatInterval)
 	storeMetaCh := time.Tick(gfs.ServerMetaStoreInterval)
+	gcCh := time.Tick(gfs.ServerGCInterval)
 	go func() {
 		for {
 			select {
@@ -119,11 +122,13 @@ func NewAndServe(addr, masterAddr gfs.ServerAddress, serverRoot string) *ChunkSe
 				return
 			case <- heartBeatCh:
 				cs.heartBeat()
+			case <- gcCh:
+				cs.garbageCollect()
 			case <- storeMetaCh:
 				err := cs.storeMeta()
 				if err != nil {
 					log.Warnf("ChunkServer %v storeMeta error: %v", cs.address, err)
-				}
+				}			
 			}
 		}
 	}()
@@ -145,9 +150,19 @@ func (cs *ChunkServer) heartBeat() {
 		LeaseExtensions: 	le,
 	}
 
-	if err := util.Call(cs.master, "Master.RPCHeartbeat", args, nil); err != nil {
+	var reply gfs.HeartbeatReply
+	if err := util.Call(cs.master, "Master.RPCHeartbeat", args, &reply); err != nil {
 		log.Warn("heartbeat rpc error ", err)
 		// log.Exit(1)
+	}
+	
+	if reply.Garbage != nil {
+		log.Info("server ", cs.address, " stale: ", reply.Garbage)
+		cs.Lock()
+		// for _, handle := range reply.Garbage {
+		cs.gc = append(cs.gc, reply.Garbage...)
+		// }
+		cs.Unlock()
 	}
 }
 
@@ -163,6 +178,38 @@ func (cs *ChunkServer) Shutdown() {
 		close(cs.shutdown)
 		cs.l.Close()
 	}
+}
+
+func (cs *ChunkServer) garbageCollect() {
+	if len(cs.gc) == 0 {
+		return
+	}
+
+	cs.Lock()
+	defer cs.Unlock()
+
+	vec := make([]int, 0)
+	for _, handle := range cs.gc {
+		vec = append(vec, int(handle))
+	}
+	sort.Ints(vec)
+	unique := make([]gfs.ChunkHandle, 0)
+	for i := 0; i < len(vec); i++ {
+		if i > 0 && vec[i] == vec[i - 1] {
+			continue
+		}
+		unique = append(unique, gfs.ChunkHandle(vec[i]))
+	}
+
+	for _, handle := range unique {
+		filename := path.Join(cs.serverRoot, fmt.Sprint(handle))
+		err := os.Remove(filename)
+		if err != nil {
+			log.Warn("ChunkServer %v garbageRemove Chunk %v, error: ", err)
+		}
+	}
+
+	cs.gc = make([]gfs.ChunkHandle, 0)
 }
 
 func (cs *ChunkServer) loadMeta() error {

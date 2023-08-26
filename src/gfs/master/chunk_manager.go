@@ -112,7 +112,7 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 			log.Warnf("Master: no such handle %v during stale detection", handle)
 		}
 		if ckinfo.version == r.Versions[i] {
-			log.Printf("Master: Detect latest Chunk %v Version %v at server %v", handle, r.Versions[i], cs)
+			// log.Printf("Master: Detect latest Chunk %v Version %v at server %v", handle, r.Versions[i], cs)
 			// ckinfo.location = append(ckinfo.location, cs)
 			cm.RegisterReplica(handle, cs, true)
 			
@@ -155,17 +155,22 @@ func (cm *chunkManager) RemoveReplica(handle gfs.ChunkHandle, addr gfs.ServerAdd
 
 // RegisterReplica adds a replica for a chunk
 func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress, useLock bool) error {
-	cm.RLock()
-	ckinfo, ok := cm.chunk[handle]
-	cm.RUnlock()
+	var ckinfo *chunkInfo
+	var ok bool
+
+	if useLock {
+		cm.RLock()
+		ckinfo, ok = cm.chunk[handle]
+		cm.RUnlock()
+		
+		ckinfo.Lock()
+		defer ckinfo.Unlock()
+	} else {
+		ckinfo, ok = cm.chunk[handle]
+	}
 
 	if !ok {
 		return fmt.Errorf("Master: ResigerReplica no such Chunk %v", handle)
-	}
-
-	if useLock {
-		ckinfo.Lock()
-		defer ckinfo.Unlock()
 	}
 	ckinfo.location = append(ckinfo.location, addr)
 
