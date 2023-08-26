@@ -764,7 +764,7 @@ func TestDiskError(t *testing.T) {
 	fmt.Println("###### Destory two chunkserver's diskes")
 	// destory two server's disk
 	log.Info(l.Locations[:2])
-	for i, _ := range cs {
+	for i := range cs {
 		if csAdd[i] == l.Locations[0] || csAdd[i] == l.Locations[1] {
 			ii := strconv.Itoa(i)
 			os.RemoveAll(path.Join(root, "cs"+ii))

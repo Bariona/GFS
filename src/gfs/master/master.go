@@ -237,11 +237,20 @@ func (m *Master) BackgroundActivity() error {
 	} 
 
 	handles := m.cm.GetRereplicas()
+	if len(handles) == 0 {
+		return nil
+	}
+	m.cm.RLock()
+	defer m.cm.RUnlock()
 	for _, handle := range handles {
-		// TODO: lease expire??
-		err := m.reReplication(handle)
-		if err != nil {
-			log.Warn("Re-replication: ", err)
+		ckinfo := m.cm.chunk[handle]
+		if ckinfo.expire.Before(time.Now()) {
+			ckinfo.Lock() // don't grant lease during reReplication
+			err := m.reReplication(handle)
+			if err != nil {
+				log.Warn("Re-replication: ", err)
+			}
+			ckinfo.Unlock()
 		}
 	}
 	return nil
@@ -267,7 +276,7 @@ func (m *Master) reReplication(handle gfs.ChunkHandle) error {
 	}
 
 	// update info 
-	err = m.cm.RegisterReplica(handle, to)
+	err = m.cm.RegisterReplica(handle, to, false)
 	if err != nil {
 		return err
 	}
@@ -285,22 +294,21 @@ func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) 
 		m.cm.ExtendLease(handle, args.Address)
 	}
 
-	if !isFirst {
-		return nil
-	}
-	// First Heart Beat
-	log.Info("New Chunkserver ", args.Address)
-	_, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
-	if err != nil {
-		return err
-	}
-	for _, handle := range latestHandles {
-		m.csm.AddChunk([]gfs.ServerAddress{args.Address}, handle)
+	if isFirst { // First Heart Beat
+		log.Info("New Chunkserver ", args.Address)
+		_, latestHandles, err := m.cm.StaleChunkDetect(args.Address)
+		if err != nil {
+			return err
+		}
+		for _, handle := range latestHandles {
+			m.csm.AddChunk([]gfs.ServerAddress{args.Address}, handle)
+		}
+
+		if err != nil {
+			return err
+		}
 	}
 
-	if err != nil {
-		return err
-	}
 	return nil
 }
 

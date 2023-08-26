@@ -100,8 +100,8 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 		return nil, nil, err
 	}
 	log.Printf("Report self address %v, chunk num: %v", cs, len(r.Handles))
-	cm.Lock()
-	defer cm.Unlock()
+	cm.RLock()
+	defer cm.RUnlock()
 
 	staleHandles := make([]gfs.ChunkHandle, 0)
 	latestHandles := make([]gfs.ChunkHandle, 0)
@@ -113,8 +113,13 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 		}
 		if ckinfo.version == r.Versions[i] {
 			log.Printf("Master: Detect latest Chunk %v Version %v at server %v", handle, r.Versions[i], cs)
-			ckinfo.location = append(ckinfo.location, cs)
-			ckinfo.expire = time.Now()
+			// ckinfo.location = append(ckinfo.location, cs)
+			cm.RegisterReplica(handle, cs, true)
+			
+			if ckinfo.expire.After(time.Now()) {
+				// ckinfo.expire = time.Now()
+				log.Fatal("Master: expire time wrong for chunk: ", handle)
+			}
 			latestHandles = append(latestHandles, handle)
 		} else {
 			staleHandles = append(staleHandles, handle)
@@ -125,7 +130,7 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 }
 
 
-// RemoveReplica adds a replica for a chunk
+// RemoveReplica removes a replica for a chunk
 func (cm *chunkManager) RemoveReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
 	cm.RLock()
 	ckinfo, ok := cm.chunk[handle]
@@ -144,12 +149,12 @@ func (cm *chunkManager) RemoveReplica(handle gfs.ChunkHandle, addr gfs.ServerAdd
 		}
 	}
 	ckinfo.location = newlocation
-	ckinfo.expire = time.Now() // TODO: expire it now ?
+	ckinfo.expire = time.Now()
 	return nil
 }
 
 // RegisterReplica adds a replica for a chunk
-func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
+func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress, useLock bool) error {
 	cm.RLock()
 	ckinfo, ok := cm.chunk[handle]
 	cm.RUnlock()
@@ -158,8 +163,10 @@ func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerA
 		return fmt.Errorf("Master: ResigerReplica no such Chunk %v", handle)
 	}
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
+	if useLock {
+		ckinfo.Lock()
+		defer ckinfo.Unlock()
+	}
 	ckinfo.location = append(ckinfo.location, addr)
 
 	return nil
@@ -341,7 +348,7 @@ func (cm *chunkManager) GetRereplicas() []gfs.ChunkHandle {
 	cm.Lock()
 	defer cm.Unlock()
 
-	// remove elements
+	// remove qualified elements
 	list := make([]gfs.ChunkHandle, 0)
 	for _, handle := range cm.reReplicas {
 		if len(cm.chunk[handle].location) < gfs.MinimumNumReplicas {
@@ -353,7 +360,6 @@ func (cm *chunkManager) GetRereplicas() []gfs.ChunkHandle {
 	// TODO: sort by priority
 	vec := make([]int, 0)
 	for _, handle := range cm.reReplicas {
-		
 		vec = append(vec, int(handle))
 	}
 	sort.Ints(vec)
