@@ -19,9 +19,10 @@ greybox_test.go: 1 master 5 chunkservers
 
 - [x] ChunkLease extension
 - [ ] CheckSum
-- [ ] GC
-- [ ] If chunkserver gets a new version number, but dead immediately, then what (stale content)?
-- [ ] separate meta-data file to be stored in the fs with an additional super-file(block) to describe the number of files
+- [ ] Snapshot
+- [x] GC
+<!-- - [ ] If chunkserver gets a new version number, but dead immediately, then what (stale content)? -->
+- [x] separate meta-data file to be stored in the fs with an additional super-file(block) to describe the number of files
 
 
 ### Reference
@@ -35,7 +36,6 @@ greybox_test.go: 1 master 5 chunkservers
 <details>
     <summary>layout</summary>
 <p>
-```
 .
 ├── README.md
 ├── docs
@@ -81,6 +81,5 @@ greybox_test.go: 1 master 5 chunkservers
         ├── fault_tolerance.go
         ├── go.mod
         └── stress.go
-```
 </p>
 </details>
