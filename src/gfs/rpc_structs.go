@@ -6,6 +6,14 @@ import (
 
 //------ ChunkServer
 
+type InvalidChunkArg struct {
+	Handle 				ChunkHandle
+	InvalidStamp 	bool
+}
+type InvalidChunkReply struct {
+	ErrorCode ErrorCode
+}
+
 type PushDataAndForwardArg struct {
 	Handle    ChunkHandle
 	Data      []byte
@@ -106,7 +114,7 @@ type HeartbeatReply struct{
 }
 
 type GetLeaseArg struct {
-	Handle ChunkHandle
+	Handle 			ChunkHandle
 }
 type GetLeaseReply struct {
 	Primary     ServerAddress
@@ -137,6 +145,11 @@ type GetFileInfoReply struct {
 	Length int64
 	Chunks int64
 }
+
+type SnapshotArg struct {
+	Path Path
+}
+type SnapshotReply struct{}
 
 type CreateFileArg struct {
 	Path Path

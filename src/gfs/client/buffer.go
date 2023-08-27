@@ -5,17 +5,15 @@ import (
 	"gfs/util"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
+// use a buffer to store the lease sent by master
 type leaseBuffer struct {
-	// item map[string]*bufferItem
 	sync.RWMutex
-	leases map[gfs.ChunkHandle] gfs.Lease
+	leases 			map[gfs.ChunkHandle] gfs.Lease
 }
-
-// type bufferItem struct {
-// 	replias map[gfs.ChunkHandle]gfs.ServerAddress
-// }
 
 func newLeaseBuffer() *leaseBuffer {
 	return &leaseBuffer {
@@ -32,7 +30,7 @@ func (l *leaseBuffer) queryLease(m gfs.ServerAddress, handle gfs.ChunkHandle) (g
 		}
 	}
 
-	// log.Printf("\033[34mClient\033[0m: Lease of chunk %v expired", handle)
+	log.Printf("\033[34mClient\033[0m: Lease of chunk %v expired", handle)
 
 	var r gfs.GetLeaseReply
 	err := util.Call(m, "Master.RPCGetLease", gfs.GetLeaseArg{Handle: handle}, &r)

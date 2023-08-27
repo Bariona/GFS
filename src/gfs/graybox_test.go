@@ -49,6 +49,23 @@ func errorAll(ch chan error, n int, t *testing.T) {
 /*
  *  TEST SUITE 1 - Basic File Operation
  */
+ func TestSnapShot(t *testing.T) {
+	p := gfs.Path("/snapshot.txt")
+	msg := []byte("Don't Lose Me.")
+
+	ch := make(chan error, 4)
+	ch <- c.Create(p)
+
+	_, err := c.Append(p, msg)
+	ch <- err
+
+	c1 := client.NewClient(mAdd)	
+	err = c1.Snapshot(p)
+	ch <- err
+
+	errorAll(ch, 3, t)
+}
+
 func TestCreateFile(t *testing.T) {
 	err := m.RPCCreateFile(gfs.CreateFileArg{"/test1.txt"}, &gfs.CreateFileReply{})
 	if err != nil {
@@ -763,7 +780,7 @@ func TestDiskError(t *testing.T) {
 
 	fmt.Println("###### Destory two chunkserver's diskes")
 	// destory two server's disk
-	log.Info(l.Locations[:2])
+	log.Info("Kill server: ", l.Locations[:2])
 	for i := range cs {
 		if csAdd[i] == l.Locations[0] || csAdd[i] == l.Locations[1] {
 			ii := strconv.Itoa(i)

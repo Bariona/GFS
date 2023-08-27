@@ -18,18 +18,19 @@ type chunkManager struct {
 	sync.RWMutex
 
 	reReplicas 	[]gfs.ChunkHandle
-	chunk map[gfs.ChunkHandle]*chunkInfo
-	file  map[gfs.Path]*fileInfo
+	chunk 			map[gfs.ChunkHandle]*chunkInfo
+	file  			map[gfs.Path]*fileInfo
 
 	numChunkHandle gfs.ChunkHandle
 }
 
 type chunkInfo struct {
 	sync.RWMutex
-	location []gfs.ServerAddress// set of replica locations
-	version  gfs.ChunkVersion
-	primary  gfs.ServerAddress 	// primary chunkserver
-	expire   time.Time         	// lease expire time
+	location 	[]gfs.ServerAddress// set of replica locations
+	version  	gfs.ChunkVersion
+	primary  	gfs.ServerAddress 	// primary chunkserver
+	expire   	time.Time         	// lease expire time
+	isFrozen	bool
 	// path     gfs.Path
 }
 
@@ -218,8 +219,6 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 	ckinfo.Lock()
 	defer ckinfo.Unlock()
 
-	var prim gfs.ServerAddress
-	var expireTime time.Time
 	staleServers := make([]gfs.ServerAddress, 0)
 
 	if len(ckinfo.location) < gfs.MinimumNumReplicas {
@@ -231,8 +230,6 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 			return nil, nil, fmt.Errorf("Master: During lease granting, chunk %v doesn't exist in any replica", handle)
 		}
 	}
-	
-	secondaries := make([]gfs.ServerAddress, 0, len(ckinfo.location) - 1)
 
 	if time.Now().After(ckinfo.expire) {
 		// grant a new lease
@@ -267,6 +264,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 		wg.Wait()
 
 		ckinfo.location = latest
+		
 		if len(latest) < gfs.MinimumNumReplicas {
 			cm.Lock()
 			cm.reReplicas = append(cm.reReplicas, handle)
@@ -277,27 +275,54 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 		}
 
 		index := rand.Intn(len(ckinfo.location))
-		prim = ckinfo.location[index]
-		expireTime = time.Now().Add(gfs.LeaseExpire)
-
-		log.Printf("Chunk %v: Granting new lease %v, %v", handle, prim, latest)
-	} else {
-		prim = ckinfo.primary
-		expireTime = ckinfo.expire
+		ckinfo.primary = ckinfo.location[index]
+		ckinfo.expire = time.Now().Add(gfs.LeaseExpire)
+		// log.Printf("\033[34mMaster\033[0m: Chunk %v, latest %v %v, %v", handle, latest, time.Now(), ckinfo.expire)
+		// log.Printf("Chunk %v: Granting new lease %v, %v", handle, ckinfo.primary, latest)
 	}
 	
+	secondaries := make([]gfs.ServerAddress, 0, len(ckinfo.location) - 1)
 	for _, addr := range ckinfo.location {
-		if addr != prim {
+		if addr != ckinfo.primary {
 			secondaries = append(secondaries, addr)
 		}
 	}
 
 	l := &gfs.Lease {
-		Primary: prim,
-		Expire: expireTime,
+		Primary: ckinfo.primary,
+		Expire: ckinfo.expire,
 		Secondaries: secondaries,
 	}
 	return staleServers, l, nil
+}
+
+// InvalidLease invalids the lease of chunk 
+func (cm *chunkManager) InvalidLease(handle gfs.ChunkHandle, invalidStamp bool) error {
+	cm.RLock()
+	ck, ok := cm.chunk[handle]
+	cm.RUnlock()
+	
+	if !ok {
+		return fmt.Errorf("Master: no such chunk %v", handle)
+	}
+
+	ck.Lock()
+	defer ck.Unlock()
+
+	log.Info(ck.expire, time.Now())
+	if (invalidStamp && ck.expire.After(time.Now())) || (!invalidStamp && ck.isFrozen) {
+		ck.isFrozen = invalidStamp
+		err := util.Call(ck.primary, "ChunkServer.RPCInvalidChunk", gfs.InvalidChunkArg{handle, invalidStamp}, nil)
+		if invalidStamp {
+			log.Printf("\033[34mMaster\033[0m: Snapshot invalid chunk %v's lease, primary: %v", handle, ck.primary)
+		}
+		if err != nil {
+			log.Fatal(err)
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ExtendLease extends the lease of chunk if the lease holder is primary.
@@ -362,7 +387,7 @@ func (cm *chunkManager) GetRereplicas() []gfs.ChunkHandle {
 	}
 	cm.reReplicas = list
 
-	// TODO: sort by priority
+	// optional: sort by priority
 	vec := make([]int, 0)
 	for _, handle := range cm.reReplicas {
 		vec = append(vec, int(handle))

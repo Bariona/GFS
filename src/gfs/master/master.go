@@ -56,7 +56,6 @@ func NewAndServe(address gfs.ServerAddress, serverRoot string) *Master {
 	}
 	m.l = l
 
-	// TODO: query servers
 	log.Info("New Master!")
 	err := m.loadMeta()
 	if err != nil {
@@ -310,7 +309,8 @@ func (m *Master) RPCHeartbeat(args gfs.HeartbeatArg, reply *gfs.HeartbeatReply) 
 	return nil
 }
 
-// RPCGetLease returns lease holder and secondaries of a chunk.
+// RPCGetLease is called by the client
+// it returns lease holder and secondaries of a chunk.
 // If no one holds the lease currently, grant one.
 func (m *Master) RPCGetLease(args gfs.GetLeaseArg, reply *gfs.GetLeaseReply) error {
 	stales, lease, err := m.cm.GetLeaseHolder(args.Handle)
@@ -328,6 +328,50 @@ func (m *Master) RPCGetLease(args gfs.GetLeaseArg, reply *gfs.GetLeaseReply) err
 	reply.Expire = lease.Expire
 	reply.Primary = lease.Primary
 	reply.Secondaries = lease.Secondaries
+	return nil
+}
+
+func (m *Master) RPCSnapshot(args gfs.SnapshotArg, reply *gfs.SnapshotReply) error {
+	path, filename := args.Path.ParseLeafname()
+	paths := path.GetPaths()
+
+	node, err := m.nm.lockParents(paths, true)
+	defer m.nm.unlockParents(paths, true)
+	if err != nil {
+		return err
+	}
+
+	file, ok := node.children[filename]
+	if !ok {
+		return fmt.Errorf("file %v doesn't exist", filename)
+	}
+
+	file.Lock()
+	defer file.Unlock()
+
+	invalidHandles := make([]gfs.ChunkHandle, 0)
+	// === invalid leases ===
+	for idx := int64(0); idx < file.chunks; idx++ {
+		handle, err := m.cm.GetChunk(args.Path, gfs.ChunkIndex(idx))
+		if err != nil {
+			return err
+		}
+		err = m.cm.InvalidLease(handle, true)
+		invalidHandles = append(invalidHandles, handle)
+		if err != nil {
+			return err
+		}
+	}
+
+
+	
+	// unfrozen
+	for _, handle := range invalidHandles {
+		err := m.cm.InvalidLease(handle, false)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -394,14 +438,6 @@ func (m *Master) RPCGetChunkHandle(args gfs.GetChunkHandleArg, reply *gfs.GetChu
 
 	file, ok := node.children[filename]
 	if !ok {
-		// TODO: grey box test requires us to create a file (counter-intuitive behavior)
-		// var r gfs.CreateFileReply
-		// err := m.RPCCreateFile(gfs.CreateFileArg{Path: args.Path}, &r)
-		// if err != nil {
-		// 	return err
-		// }
-		// err = m.RPCGetChunkHandle(args, reply)
-		// return err
 		return fmt.Errorf("file %v doesn't exist", filename)
 	}
 
