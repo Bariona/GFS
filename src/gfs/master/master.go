@@ -242,14 +242,14 @@ func (m *Master) BackgroundActivity() error {
 	m.cm.RLock()
 	defer m.cm.RUnlock()
 	for _, handle := range handles {
-		ckinfo := m.cm.chunk[handle]
-		if ckinfo.expire.Before(time.Now()) {
-			ckinfo.Lock() // don't grant lease during reReplication
+		ck := m.cm.chunk[handle]
+		if ck.expire.Before(time.Now()) {
+			ck.Lock() // don't grant lease during reReplication
 			err := m.reReplication(handle)
 			if err != nil {
 				log.Warn("Re-replication: ", err)
 			}
-			ckinfo.Unlock()
+			ck.Unlock()
 		}
 	}
 	return nil
@@ -349,29 +349,39 @@ func (m *Master) RPCSnapshot(args gfs.SnapshotArg, reply *gfs.SnapshotReply) err
 	file.Lock()
 	defer file.Unlock()
 
-	invalidHandles := make([]gfs.ChunkHandle, 0)
+	log.Printf("\033[34mMaster\033[0m: Snapshot of file %v begin", args.Path)
+
+	ckinfos := make([]*chunkInfo, 0)
 	// === invalid leases ===
 	for idx := int64(0); idx < file.chunks; idx++ {
+		// TODO: goroutine
 		handle, err := m.cm.GetChunk(args.Path, gfs.ChunkIndex(idx))
 		if err != nil {
 			return err
 		}
-		err = m.cm.InvalidLease(handle, true)
-		invalidHandles = append(invalidHandles, handle)
+		ck, err := m.cm.GetChunkInfo(handle)
+		ckinfos = append(ckinfos, ck)
+		ck.Lock()
+		defer ck.Unlock()
 		if err != nil {
 			return err
+		}		
+
+		if ck.expire.After(time.Now()) {
+			err := util.Call(ck.primary, "ChunkServer.RPCInvalidChunk", gfs.InvalidChunkArg{handle, true}, nil)
+			ck.expire = time.Now()
+			if err != nil {
+				return err
+			}		
 		}
 	}
 
-
+	// add reference cnt
+	for _, ck := range ckinfos {
+		ck.refCnt += 1
+	}
 	
-	// unfrozen
-	for _, handle := range invalidHandles {
-		err := m.cm.InvalidLease(handle, false)
-		if err != nil {
-			return err
-		}
-	}
+	log.Printf("\033[34mMaster\033[0m: Snapshot of file %v end", args.Path)
 	return nil
 }
 

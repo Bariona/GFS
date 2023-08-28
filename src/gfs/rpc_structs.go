@@ -102,6 +102,14 @@ type ApplyCopyReply struct {
 	ErrorCode ErrorCode
 }
 
+type ChunkCopyArg struct {
+	OldHandle ChunkHandle
+	NewHandle ChunkHandle
+}
+type ChunkCopyReply struct {
+	ErrorCode ErrorCode
+}
+
 //------ Master
 
 type HeartbeatArg struct {

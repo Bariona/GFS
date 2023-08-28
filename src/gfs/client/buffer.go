@@ -21,12 +21,18 @@ func newLeaseBuffer() *leaseBuffer {
 	}
 }
 
+func (l *leaseBuffer) expireLease(handle gfs.ChunkHandle) {
+	l.leases[handle] = gfs.Lease{
+		Expire: time.Now(),
+	}
+}
+
 func (l *leaseBuffer) queryLease(m gfs.ServerAddress, handle gfs.ChunkHandle) (gfs.Lease, error) {
 	l.Lock()
 	defer l.Unlock()
-	if ret, ok := l.leases[handle]; ok {
-		if ret.Expire.After(time.Now()) {
-			return ret, nil
+	if ls, ok := l.leases[handle]; ok {
+		if ls.Expire.After(time.Now()) {
+			return ls, nil
 		}
 	}
 

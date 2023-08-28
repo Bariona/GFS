@@ -26,12 +26,12 @@ type chunkManager struct {
 
 type chunkInfo struct {
 	sync.RWMutex
-	location 	[]gfs.ServerAddress// set of replica locations
+	location 	[]gfs.ServerAddress	// set of replica locations
 	version  	gfs.ChunkVersion
 	primary  	gfs.ServerAddress 	// primary chunkserver
 	expire   	time.Time         	// lease expire time
 	isFrozen	bool
-	// path     gfs.Path
+	refCnt		int									// reference count
 }
 
 type fileInfo struct {
@@ -108,17 +108,17 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 	latestHandles := make([]gfs.ChunkHandle, 0)
 
 	for i, handle := range r.Handles {
-		ckinfo, ok := cm.chunk[handle]
+		ck, ok := cm.chunk[handle]
 		if !ok {
 			log.Warnf("Master: no such handle %v during stale detection", handle)
 		}
-		if ckinfo.version == r.Versions[i] {
+		if ck.version == r.Versions[i] {
 			// log.Printf("Master: Detect latest Chunk %v Version %v at server %v", handle, r.Versions[i], cs)
-			// ckinfo.location = append(ckinfo.location, cs)
+			// ck.location = append(ck.location, cs)
 			cm.RegisterReplica(handle, cs, true)
 			
-			if ckinfo.expire.After(time.Now()) {
-				// ckinfo.expire = time.Now()
+			if ck.expire.After(time.Now()) {
+				// ck.expire = time.Now()
 				log.Fatal("Master: expire time wrong for chunk: ", handle)
 			}
 			latestHandles = append(latestHandles, handle)
@@ -134,46 +134,46 @@ func (cm *chunkManager) StaleChunkDetect(cs gfs.ServerAddress) ([]gfs.ChunkHandl
 // RemoveReplica removes a replica for a chunk
 func (cm *chunkManager) RemoveReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress) error {
 	cm.RLock()
-	ckinfo, ok := cm.chunk[handle]
+	ck, ok := cm.chunk[handle]
 	cm.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("Master: RemoveReplica no such handle %v", handle)
 	}
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
-	newlocation := make([]gfs.ServerAddress, 0, len(ckinfo.location) - 1)
-	for _, a := range ckinfo.location {
+	ck.Lock()
+	defer ck.Unlock()
+	newlocation := make([]gfs.ServerAddress, 0, len(ck.location) - 1)
+	for _, a := range ck.location {
 		if a != addr {
 			newlocation = append(newlocation, a)
 		}
 	}
-	ckinfo.location = newlocation
-	ckinfo.expire = time.Now()
+	ck.location = newlocation
+	ck.expire = time.Now()
 	return nil
 }
 
 // RegisterReplica adds a replica for a chunk
 func (cm *chunkManager) RegisterReplica(handle gfs.ChunkHandle, addr gfs.ServerAddress, useLock bool) error {
-	var ckinfo *chunkInfo
+	var ck *chunkInfo
 	var ok bool
 
 	if useLock {
 		cm.RLock()
-		ckinfo, ok = cm.chunk[handle]
+		ck, ok = cm.chunk[handle]
 		cm.RUnlock()
 		
-		ckinfo.Lock()
-		defer ckinfo.Unlock()
+		ck.Lock()
+		defer ck.Unlock()
 	} else {
-		ckinfo, ok = cm.chunk[handle]
+		ck, ok = cm.chunk[handle]
 	}
 
 	if !ok {
 		return fmt.Errorf("Master: ResigerReplica no such Chunk %v", handle)
 	}
-	ckinfo.location = append(ckinfo.location, addr)
+	ck.location = append(ck.location, addr)
 
 	return nil
 }
@@ -184,7 +184,7 @@ func (cm *chunkManager) GetReplicas(handle gfs.ChunkHandle) ([]gfs.ServerAddress
 	defer cm.RUnlock()
 	replicas, ok := cm.chunk[handle]
 	if !ok {
-		return nil, fmt.Errorf("not such ChunkHandle %v", handle)
+		return nil, fmt.Errorf("Master: GetReplica no such ChunkHandle %v", handle)
 	}
 	return replicas.location, nil
 }
@@ -204,49 +204,65 @@ func (cm *chunkManager) GetChunk(path gfs.Path, index gfs.ChunkIndex) (gfs.Chunk
 	return handle, nil
 }
 
+func (cm *chunkManager) GetChunkInfo(handle gfs.ChunkHandle) (*chunkInfo, error) {
+	cm.RLock()
+	ck, ok := cm.chunk[handle]
+	cm.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("Master: RemoveReplica no such handle %v", handle)
+	}
+	return ck, nil
+}
+
 // GetLeaseHolder returns the chunkserver that holds the lease of a chunk
 // (i.e. primary) and expire time of the lease. If no one has a lease,
 // grant one to a replica it chooses.
 func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddress, *gfs.Lease, error) {
 	cm.RLock()
-	ckinfo, ok := cm.chunk[handle]
+	ck, ok := cm.chunk[handle]
 	cm.RUnlock()
 
 	if !ok {
 		return nil, nil, fmt.Errorf("no such ChunkHandle %v", handle)
 	}
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
+	ck.Lock()
+	defer ck.Unlock()
 
 	staleServers := make([]gfs.ServerAddress, 0)
 
-	if len(ckinfo.location) < gfs.MinimumNumReplicas {
+	if len(ck.location) < gfs.MinimumNumReplicas {
 		cm.Lock()
 		cm.reReplicas = append(cm.reReplicas, handle)
 		cm.Unlock()
 		
-		if len(ckinfo.location) == 0 {
+		if len(ck.location) == 0 {
 			return nil, nil, fmt.Errorf("Master: During lease granting, chunk %v doesn't exist in any replica", handle)
 		}
 	}
 
-	if time.Now().After(ckinfo.expire) {
+	if time.Now().After(ck.expire) {
+		e := util.Call(ck.primary, "ChunkServer.RPCInvalidChunk", gfs.InvalidChunkArg{handle, false}, nil)
+		if e != nil {
+			log.Warnf("Master: unfrozen chunk %v, error: %v, %v", handle, e, ck.primary)
+		}
+
 		// grant a new lease
-		ckinfo.version += 1
+		ck.version += 1
 	
 		var wg sync.WaitGroup
-		wg.Add(len(ckinfo.location))
+		wg.Add(len(ck.location))
 
 		var lock sync.Mutex
 		latest := make([]gfs.ServerAddress, 0)
-		for _, addr := range ckinfo.location {
+		for _, addr := range ck.location {
 			go func(addr gfs.ServerAddress) {
 				var r gfs.GetNewChunkVerReply
 				err := util.Call(
 					addr, 
 					"ChunkServer.RPCGetNewChunkVersion", 
-					gfs.GetNewChunkVerArg{Handle: handle, Version: ckinfo.version}, 
+					gfs.GetNewChunkVerArg{Handle: handle, Version: ck.version}, 
 					&r,
 				)
 				
@@ -263,8 +279,7 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 		}
 		wg.Wait()
 
-		ckinfo.location = latest
-		
+		ck.location = latest
 		if len(latest) < gfs.MinimumNumReplicas {
 			cm.Lock()
 			cm.reReplicas = append(cm.reReplicas, handle)
@@ -274,23 +289,43 @@ func (cm *chunkManager) GetLeaseHolder(handle gfs.ChunkHandle) ([]gfs.ServerAddr
 			}
 		}
 
-		index := rand.Intn(len(ckinfo.location))
-		ckinfo.primary = ckinfo.location[index]
-		ckinfo.expire = time.Now().Add(gfs.LeaseExpire)
-		// log.Printf("\033[34mMaster\033[0m: Chunk %v, latest %v %v, %v", handle, latest, time.Now(), ckinfo.expire)
-		// log.Printf("Chunk %v: Granting new lease %v, %v", handle, ckinfo.primary, latest)
+		index := rand.Intn(len(ck.location))
+		ck.primary = ck.location[index]
+		ck.expire = time.Now().Add(gfs.LeaseExpire)
 	}
 	
-	secondaries := make([]gfs.ServerAddress, 0, len(ckinfo.location) - 1)
-	for _, addr := range ckinfo.location {
-		if addr != ckinfo.primary {
+
+	// check reference count
+	if ck.refCnt > 0 {
+		cm.Lock()
+		cm.numChunkHandle += 1
+		newHandle := cm.numChunkHandle
+		cm.chunk[newHandle] = &chunkInfo{
+			location: ck.location,
+			version: ck.version,
+			expire: time.Now(),
+		}
+		cm.Unlock()
+		log.Info("ADDED CHUNK")
+
+		log.Printf("Master: Split Chunk (%v) -> copy (%v) at %v", handle, newHandle, ck.location)
+		err := util.CallAll(ck.location, "ChunkServer.RPCChunkCopy", gfs.ChunkCopyArg{handle, newHandle})
+		if err != nil {
+			log.Warn(err)
+		}
+		ck.refCnt--
+	}
+
+	secondaries := make([]gfs.ServerAddress, 0, len(ck.location) - 1)
+	for _, addr := range ck.location {
+		if addr != ck.primary {
 			secondaries = append(secondaries, addr)
 		}
 	}
 
 	l := &gfs.Lease {
-		Primary: ckinfo.primary,
-		Expire: ckinfo.expire,
+		Primary: ck.primary,
+		Expire: ck.expire,
 		Secondaries: secondaries,
 	}
 	return staleServers, l, nil
@@ -309,7 +344,6 @@ func (cm *chunkManager) InvalidLease(handle gfs.ChunkHandle, invalidStamp bool) 
 	ck.Lock()
 	defer ck.Unlock()
 
-	log.Info(ck.expire, time.Now())
 	if (invalidStamp && ck.expire.After(time.Now())) || (!invalidStamp && ck.isFrozen) {
 		ck.isFrozen = invalidStamp
 		err := util.Call(ck.primary, "ChunkServer.RPCInvalidChunk", gfs.InvalidChunkArg{handle, invalidStamp}, nil)
@@ -317,7 +351,7 @@ func (cm *chunkManager) InvalidLease(handle gfs.ChunkHandle, invalidStamp bool) 
 			log.Printf("\033[34mMaster\033[0m: Snapshot invalid chunk %v's lease, primary: %v", handle, ck.primary)
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("InvalidLease error: ", err)
 			return err
 		}
 	}

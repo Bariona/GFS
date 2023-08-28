@@ -52,6 +52,7 @@ const (
 	WriteExceedChunkSize
 	ReadEOF
 	NotAvailableForCopy
+	LeaseExpired
 )
 
 // extended error type with error code

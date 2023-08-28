@@ -8,10 +8,10 @@ greybox_test.go: 1 master 5 chunkservers
 
 ### To-Do List
 
-- [ ] Fault Tolerance
+<!-- - [ ] Fault Tolerance
     1. checksum
     2. stale replica detect
-    3. WAL log
+    3. WAL log -->
 
 - [x] no global time: then how to determine Lease Expiration?
 
@@ -19,7 +19,7 @@ greybox_test.go: 1 master 5 chunkservers
 
 - [x] ChunkLease extension
 - [ ] CheckSum
-- [ ] Snapshot
+- [x] Snapshot
 - [x] GC
 <!-- - [ ] If chunkserver gets a new version number, but dead immediately, then what (stale content)? -->
 - [x] separate meta-data file to be stored in the fs with an additional super-file(block) to describe the number of files

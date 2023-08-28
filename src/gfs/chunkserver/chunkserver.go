@@ -231,10 +231,10 @@ func (cs *ChunkServer) loadMeta() error {
 
 	log.Printf("Server %v: load %v chunks", cs.address, len(metas))
 
-	for _, ckinfo := range metas {
-		cs.chunk[ckinfo.Handle] = &chunkInfo{
-			length: gfs.Offset(ckinfo.Length),
-			version: ckinfo.Version,
+	for _, ck := range metas {
+		cs.chunk[ck.Handle] = &chunkInfo{
+			length: gfs.Offset(ck.Length),
+			version: ck.Version,
 			invalidStamp: false,
 		}
 	}
@@ -252,11 +252,11 @@ func (cs *ChunkServer) storeMeta() error {
 	cs.RLock()
 	defer cs.RUnlock()
 	metas := make([]persistChunkInfo, 0)
-	for handle, ckinfo := range cs.chunk {
+	for handle, ck := range cs.chunk {
 		metas = append(metas, persistChunkInfo{
 			Handle: handle,
-			Length: ckinfo.length,
-			Version: ckinfo.version,
+			Length: ck.length,
+			Version: ck.version,
 		})
 	}
 
@@ -276,9 +276,9 @@ func (cs *ChunkServer) RPCReportSelf(args gfs.ReportSelfArg, reply *gfs.ReportSe
 	handles := make([]gfs.ChunkHandle, 0)
 	versions := make([]gfs.ChunkVersion, 0)
 
-	for handle, ckinfo := range cs.chunk {
+	for handle, ck := range cs.chunk {
 		handles = append(handles, handle)
-		versions = append(versions, ckinfo.version)
+		versions = append(versions, ck.version)
 	}
 	reply.Handles = handles
 	reply.Versions = versions
@@ -288,32 +288,33 @@ func (cs *ChunkServer) RPCReportSelf(args gfs.ReportSelfArg, reply *gfs.ReportSe
 // RPCInvalidChunk is called by client to tell the **primary node** mark current lease as invalid
 func (cs *ChunkServer) RPCInvalidChunk(args gfs.InvalidChunkArg, reply *gfs.InvalidChunkReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.Handle]
+	ck, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("no such chunk %v while updating chunk version at %v", args.Handle, cs.address)
 	} 
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
+	ck.Lock()
+	defer ck.Unlock()
 
-	ckinfo.invalidStamp = args.InvalidStamp
+	log.Printf("\033[34mChunkServer %v\033[0m: invalid chunk %v -> %v", cs.address, args.Handle, args.InvalidStamp)
 
+	ck.invalidStamp = args.InvalidStamp
 	return nil
 }
 
 func (cs *ChunkServer) RPCGetNewChunkVersion(args gfs.GetNewChunkVerArg, reply *gfs.GetNewChunkVerReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.Handle]
+	ck, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("no such chunk %v while updating chunk version at %v", args.Handle, cs.address)
 	} 
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
-	if ckinfo.version + gfs.ChunkVersion(1) == args.Version {
-		ckinfo.version = args.Version
+	ck.Lock()
+	defer ck.Unlock()
+	if ck.version + gfs.ChunkVersion(1) == args.Version {
+		ck.version = args.Version
 		reply.IsStale = false
 	} else {
 		reply.IsStale = true
@@ -392,14 +393,14 @@ func (cs *ChunkServer) RPCCreateChunk(args gfs.CreateChunkArg, reply *gfs.Create
 // RPCReadChunk is called by client, read chunk data and return
 func (cs *ChunkServer) RPCReadChunk(args gfs.ReadChunkArg, reply *gfs.ReadChunkReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.Handle]
+	ck, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("no such chunk %v while ReadChunk at %v", args.Handle, cs.address)
 	} 
 
-	ckinfo.RLock()
-	defer ckinfo.RUnlock()
+	ck.RLock()
+	defer ck.RUnlock()
 
 	reply.Data = make([]byte, args.Length)
 	var err error
@@ -422,16 +423,17 @@ func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChu
 	handle := args.DataID.Handle
 	
 	cs.Lock()
-	
-	ckinfo, ok := cs.chunk[handle]
+	ck, ok := cs.chunk[handle]
 	cs.Unlock()
 
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("server: no such chunk %v while WriteChunk at %v", handle, cs.address)
 	} 
 
-	if ckinfo.invalidStamp {
-		return fmt.Errorf("server: chunk %v's lease is been invalided at %v", handle, cs.address)
+	if ck.invalidStamp {
+		reply.ErrorCode = gfs.LeaseExpired
+		return nil
+		// return fmt.Errorf("server: chunk %v's lease is been invalided at %v", handle, cs.address)
 	}
 
 	var mutArg = gfs.ApplyMutationArg{
@@ -455,7 +457,7 @@ func (cs *ChunkServer) RPCWriteChunk(args gfs.WriteChunkArg, reply *gfs.WriteChu
 		return err
 	}
 
-	// ! don't move it before incase of write error but still extend lease
+	// ! don't move it before in case of write error but still extend the lease
 	cs.pendingLeaseExtensions.Add(handle)
 	return nil
 }
@@ -468,14 +470,17 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 	handle := args.DataID.Handle
 
 	cs.Lock()
-	ckinfo, ok := cs.chunk[handle]
+	ck, ok := cs.chunk[handle]
 	cs.Unlock()
 
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("server: no such chunk %v while AppendChunk at %v", handle, cs.address)
 	} 
-	if ckinfo.invalidStamp {
-		return fmt.Errorf("server: chunk %v's lease is been invalided at %v", handle, cs.address)
+	// log.Info("LALALA: APPEND !! ", cs.address, handle, ck.invalidStamp)
+	if ck.invalidStamp {
+		reply.ErrorCode = gfs.LeaseExpired
+		return nil
+		// return fmt.Errorf("server: chunk %v's lease is been invalided at %v", handle, cs.address)
 	}
 
 	data, ok := cs.dl.Get(args.DataID)
@@ -484,27 +489,27 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 	}
 	cs.dl.Delete(args.DataID)
 
-	ckinfo.Lock()
-	defer ckinfo.Unlock()
+	ck.Lock()
+	defer ck.Unlock()
 	
 	// pad or append
 	var mtype gfs.MutationType
-	newlen := ckinfo.length + gfs.Offset(len(data))
-	reply.Offset = ckinfo.length
+	newlen := ck.length + gfs.Offset(len(data))
+	reply.Offset = ck.length
 
 	if newlen > gfs.MaxChunkSize {
 		mtype = gfs.MutationPad
-		ckinfo.length = gfs.MaxChunkSize
+		ck.length = gfs.MaxChunkSize
 		reply.ErrorCode = gfs.AppendExceedChunkSize
 	} else {
 		mtype = gfs.MutationAppend
-		ckinfo.length = newlen
+		ck.length = newlen
 		reply.ErrorCode = gfs.Success
 	}
 	
 	wait := make(chan error, 1)
 	go func() {
-		// do not call RPCApplyMutation to avoid re-lock ckinfo -> dead lock
+		// do not call RPCApplyMutation to avoid re-lock ck -> dead lock
 		wait <- cs.applyMutation(handle, Mutation{mtype,	data,	reply.Offset})
 	}()
 	
@@ -517,6 +522,7 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 		return err
 	}
 
+	// ! don't move it before in case of write error but still extend the lease
 	cs.pendingLeaseExtensions.Add(handle)
 	return nil
 }
@@ -524,9 +530,9 @@ func (cs *ChunkServer) RPCAppendChunk(args gfs.AppendChunkArg, reply *gfs.Append
 // RPCApplyWriteChunk is called by primary to apply mutations
 func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.ApplyMutationReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.DataID.Handle]
+	ck, ok := cs.chunk[args.DataID.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("server: no such chunk %v while MutateChunk at %v", args.DataID.Handle, cs.address)
 	} 
 
@@ -536,8 +542,8 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 	}
 	cs.dl.Delete(args.DataID)
 
-	ckinfo.Lock()	
-	defer ckinfo.Unlock()
+	ck.Lock()	
+	defer ck.Unlock()
 
 	err := cs.applyMutation(
 		args.DataID.Handle,
@@ -555,21 +561,21 @@ func (cs *ChunkServer) RPCApplyMutation(args gfs.ApplyMutationArg, reply *gfs.Ap
 	return nil 
 }
 
-// RPCSendCCopy is called by master, send the whole copy to given address
+// RPCSendCopy is called by master, send the whole copy to given address
 func (cs *ChunkServer) RPCSendCopy(args gfs.SendCopyArg, reply *gfs.SendCopyReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.Handle]
+	ck, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("no such chunk %v while RPCSendCopy at %v", args.Handle, cs.address)
 	}
 
-	ckinfo.RLock()
-	defer ckinfo.RUnlock()
+	ck.RLock()
+	defer ck.RUnlock()
 
-	data := make([]byte, ckinfo.length)
+	data := make([]byte, ck.length)
 	len, err := cs.readChunk(args.Handle, gfs.Offset(0), data)
-	if err != nil || len != int(ckinfo.length) {
+	if err != nil || len != int(ck.length) {
 		return err
 	}
 
@@ -579,7 +585,7 @@ func (cs *ChunkServer) RPCSendCopy(args gfs.SendCopyArg, reply *gfs.SendCopyRepl
 		gfs.ApplyCopyArg{
 			Handle: args.Handle,
 			Data: data,
-			Version: ckinfo.version,
+			Version: ck.version,
 		},
 		&gfs.ApplyCopyReply{},
 	)
@@ -587,21 +593,53 @@ func (cs *ChunkServer) RPCSendCopy(args gfs.SendCopyArg, reply *gfs.SendCopyRepl
 	return err
 }
 
-// RPCSendCCopy is called by another replica
+// RPCApplyCopy is called by another replica
 // rewrite the local version to given copy data
 func (cs *ChunkServer) RPCApplyCopy(args gfs.ApplyCopyArg, reply *gfs.ApplyCopyReply) error {
 	cs.RLock()
-	ckinfo, ok := cs.chunk[args.Handle]
+	ck, ok := cs.chunk[args.Handle]
 	cs.RUnlock()
-	if !ok || ckinfo.stale {
+	if !ok || ck.stale {
 		return fmt.Errorf("no such chunk %v while RPCApplyCopy at %v", args.Handle, cs.address)
 	}
 
-	ckinfo.Lock()
-	ckinfo.version = args.Version
-	ckinfo.Unlock()
+	ck.Lock()
+	ck.version = args.Version
+	ck.Unlock()
 	
 	err := cs.writeChunk(args.Handle, args.Data, gfs.Offset(0))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// RPCChunkCopy is called by master to ask chunkserver to replicate a same copy of chunk locally
+func (cs *ChunkServer) RPCChunkCopy(args gfs.ChunkCopyArg, reply *gfs.ChunkCopyReply) error {
+	cs.RLock()
+	ck, ok := cs.chunk[args.OldHandle]
+	cs.RUnlock()
+	if !ok || ck.stale {
+		return fmt.Errorf("no such chunk %v while RPCChunkCopy at %v", args.OldHandle, cs.address)
+	}
+
+	if _, ok := cs.chunk[args.NewHandle]; ok {
+		return fmt.Errorf("chunk %v has exist on server %v", args.NewHandle, cs.address)
+	}
+	cs.chunk[args.NewHandle] = &chunkInfo{
+		version: ck.version,
+		length: ck.length,
+		invalidStamp: false,
+	}
+
+	data := make([]byte, ck.length)
+	_, err := cs.readChunk(args.OldHandle, gfs.Offset(0), data)
+	if err != nil {
+		log.Fatal(err)
+		return err
+	}
+	// // log.Printf("GET OLD %v, new %v, data %v", args.OldHandle, args.NewHandle, data)
+	err = cs.writeChunk(args.NewHandle, data, gfs.Offset(0))
 	if err != nil {
 		return err
 	}
@@ -629,9 +667,9 @@ func (cs *ChunkServer) writeChunk(handle gfs.ChunkHandle, data []byte, offset gf
 	}
 
 	cs.Lock()
-	ckinfo := cs.chunk[handle]
-	if newlen > int(ckinfo.length) {
-		ckinfo.length = gfs.Offset(newlen)
+	ck := cs.chunk[handle]
+	if newlen > int(ck.length) {
+		ck.length = gfs.Offset(newlen)
 	}
 	cs.Unlock()
 
@@ -671,9 +709,9 @@ func (cs *ChunkServer) applyMutation(handle gfs.ChunkHandle, args Mutation) erro
 	if err != nil {
 		log.Printf("chunk %v become stale at %v due to %v", handle, cs.address, err)
 		cs.RLock()
-		ckinfo := cs.chunk[handle]
+		ck := cs.chunk[handle]
 		cs.RUnlock()
-		ckinfo.stale = true
+		ck.stale = true
 		return err
 	}
 	return nil

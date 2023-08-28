@@ -52,18 +52,56 @@ func errorAll(ch chan error, n int, t *testing.T) {
  func TestSnapShot(t *testing.T) {
 	p := gfs.Path("/snapshot.txt")
 	msg := []byte("Don't Lose Me.")
+	msg2 := []byte("Don't Read Me.")
 
-	ch := make(chan error, 4)
+	ch := make(chan error, N+10)
 	ch <- c.Create(p)
 
+	// append chunk 1st
 	_, err := c.Append(p, msg)
 	ch <- err
 
-	c1 := client.NewClient(mAdd)	
-	err = c1.Snapshot(p)
-	ch <- err
+	// write chunk 2nd
+	var r gfs.GetChunkHandleReply
+	err = m.RPCGetChunkHandle(gfs.GetChunkHandleArg{p, 1}, &r)
+	if err != nil {
+		t.Error(err)
+	}
+	for i := 0; i < N; i++ {
+		go func(x int) {
+			ch <- c.WriteChunk(r.Handle, gfs.Offset(x*2), []byte(fmt.Sprintf("%2d", x)))
+		}(i)
+	}
 
-	errorAll(ch, 3, t)
+	time.Sleep(500 * time.Millisecond)
+
+	c1 := client.NewClient(mAdd)	
+	go func() {
+		err := c1.Snapshot(p)
+		ch <- err
+	}()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		err := c.Write(p, gfs.Offset(0), msg)
+		if e, ok := err.(gfs.Error); ok && e.Code == gfs.LeaseExpired {
+			ch <- nil
+		} else {
+			ch <- fmt.Errorf("lease expire not work")
+		}
+		err = c.Write(p, gfs.Offset(0), msg2)
+		ch <- err
+	}()
+	
+	errorAll(ch, N+5, t)
+
+	buf := make([]byte, len(msg2))
+	_, err = c1.ReadChunk(3, gfs.Offset(0), buf)
+	if err != nil {
+		t.Error(err)
+	}
+	if !reflect.DeepEqual(msg, buf) {
+		t.Error("expected (", msg, ") != buf (", buf, ")")
+	}
 }
 
 func TestCreateFile(t *testing.T) {

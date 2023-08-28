@@ -134,19 +134,27 @@ func (c *Client) Write(path gfs.Path, offset gfs.Offset, data []byte) error {
 	for int(cur) <= end {
 		l := util.Max(int(offset), int(cur * gfs.MaxChunkSize))
 		r := util.Min(bound, int((cur + 1) * gfs.MaxChunkSize))
-		chunkhandle, err := c.GetChunkHandle(path, gfs.ChunkIndex(cur))
+		handle, err := c.GetChunkHandle(path, gfs.ChunkIndex(cur))
 		size := r - l
 		if err != nil {
 			return err
 		}
 
 		for {
-			err = c.WriteChunk(chunkhandle, gfs.Offset(l % gfs.MaxChunkSize), data[getn : getn + size])
+			err = c.WriteChunk(handle, gfs.Offset(l % gfs.MaxChunkSize), data[getn : getn + size])
 			if err == nil {
 				break
 			}
+			if e, ok := err.(gfs.Error); ok && e.Code ==  gfs.LeaseExpired {
+				break
+			}
+
 			time.Sleep(50 * time.Millisecond)
 			log.Info("wtf? retry write ERROR INFO ", err)
+		}
+		
+		if e, ok := err.(gfs.Error); ok && e.Code ==  gfs.LeaseExpired {
+			c.buffer.expireLease(handle)	
 		}
 		if err != nil {
 			return err
@@ -180,7 +188,7 @@ func (c *Client) Append(path gfs.Path, data []byte) (offset gfs.Offset, err erro
 			if err == nil {
 				break
 			} 
-			if e, ok := err.(gfs.Error); ok && e.Code == gfs.AppendExceedChunkSize {
+			if e, ok := err.(gfs.Error); ok && (e.Code == gfs.AppendExceedChunkSize || e.Code ==  gfs.LeaseExpired) {
 				break
 			}
 			log.Warning("chunk ", handle, " failed at appending, retry again: ", err)
@@ -198,6 +206,11 @@ func (c *Client) Append(path gfs.Path, data []byte) (offset gfs.Offset, err erro
 		log.Printf("padding %v, retry", index)
 	}
 
+	if e, ok := err.(gfs.Error); ok && e.Code == gfs.LeaseExpired {
+		c.buffer.expireLease(handle)
+		return 
+	}
+	
 	if err != nil {
 		return 
 	}
@@ -277,6 +290,7 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 	}
 	
 	// write data
+	var reply gfs.WriteChunkReply
 	err = util.Call(
 		lease.Primary,
 		"ChunkServer.RPCWriteChunk",
@@ -285,9 +299,15 @@ func (c *Client) WriteChunk(handle gfs.ChunkHandle, offset gfs.Offset, data []by
 			Offset: offset,
 			Secondaries: lease.Secondaries,
 		},
-		&gfs.WriteChunkReply{},
+		&reply,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if reply.ErrorCode == gfs.LeaseExpired {
+		return gfs.Error{Code: reply.ErrorCode, Err: "lease expired when writing"}
+	}
+	return nil
 }
 
 // AppendChunk appends data to a chunk.
@@ -339,6 +359,9 @@ func (c *Client) AppendChunk(handle gfs.ChunkHandle, data []byte) (offset gfs.Of
 	}
 	if reply.ErrorCode == gfs.AppendExceedChunkSize {
 		return reply.Offset, gfs.Error{Code: reply.ErrorCode, Err: "padding"}
+	}
+	if reply.ErrorCode == gfs.LeaseExpired {
+		return reply.Offset, gfs.Error{Code: reply.ErrorCode, Err: "lease expired when appending"}
 	}
 	return reply.Offset, nil
 }
