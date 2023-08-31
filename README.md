@@ -2,36 +2,30 @@
 
 ![](https://img.shields.io/badge/language-Go-blue)
 
-a toy implementation of the Google File System(GFS) in golang.
+> a toy implementation of the Google File System(GFS) in golang.
+
+### Test
 
 greybox_test.go: 1 master 5 chunkservers 
 
-### To-Do List
 
-<!-- - [ ] Fault Tolerance
-    1. checksum
-    2. stale replica detect
-    3. WAL log -->
-
-- [x] no global time: then how to determine Lease Expiration?
-
-    Timestamp is only given by master, so it's ok.
-
-- [x] ChunkLease extension
-- [ ] CheckSum
-- [x] Snapshot
-- [x] GC
-<!-- - [ ] If chunkserver gets a new version number, but dead immediately, then what (stale content)? -->
-- [x] separate meta-data file to be stored in the fs with an additional super-file(block) to describe the number of files
+```bash
+$ cd ./src/gfs
+$ go test -v 
+$ go test -run="TESTCASENAE1|TESTCASE2|..."
+```
 
 
-### Reference
 
-1.  [Effective Go](https://go.dev/doc/effective_go)
-2.  [paper of GFS](https://research.google.com/archive/gfs-sosp2003.pdf)​
-3.  MIT6.824 by Robert Morris
+### Support Features
+
+Read, Create, Delete, Write, Atomic Record Append, Garbage Collect (Stale Chunk Detection), Snapshot, Fault Tolerance (Chunk Re-replication)
+
+Detailed Explanation: [see here](./docs/notes.md)
 
 ### Project Layout 
+
+~~View the raw code to see an organized layout (~~
 
 <details>
     <summary>layout</summary>
@@ -85,3 +79,10 @@ greybox_test.go: 1 master 5 chunkservers
         └── stress.go
 </p>
 </details>
+
+
+### Reference
+
+1.  [Effective Go](https://go.dev/doc/effective_go)
+2.  [paper of GFS](https://research.google.com/archive/gfs-sosp2003.pdf)​
+3.  MIT6.824 by Robert Morris
